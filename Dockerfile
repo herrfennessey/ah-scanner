@@ -11,7 +11,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/ahc /ahc
 ENV AHC_CONFIG=/config.yaml
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 4653
 HEALTHCHECK --interval=5m --timeout=10s --start-period=10m CMD ["/ahc", "health"]
 ENTRYPOINT ["/ahc"]
 CMD ["collect"]

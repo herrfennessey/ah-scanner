@@ -27,7 +27,7 @@ schedule:
 jitter: 3m                  # random ± offset on each collect run
 stale_after: 3h             # alert when polls succeed but no new data arrives (frozen endpoint)
 
-listen: ":8080"             # web UI at /, MCP at /mcp; empty disables both
+listen: ":4653"             # web UI at /, MCP at /mcp ("GOLD" on a phone keypad); empty disables both
 data_dir: /data
 locale: en_GB
 raw_retention: 48h          # raw zstd bodies kept for reprocessing

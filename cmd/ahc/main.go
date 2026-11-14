@@ -179,7 +179,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 	case "serve":
 		addr := cfg.Listen
 		if addr == "" {
-			addr = ":8080"
+			addr = ":4653"
 		}
 		return (&web.Server{Cfg: cfg, Store: st, Log: log}).ListenAndServe(ctx, addr)
 	case "rollup":

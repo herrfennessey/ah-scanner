@@ -65,7 +65,7 @@ cp .envrc.example .envrc      # fill in BLIZZARD_CLIENT_ID / BLIZZARD_CLIENT_SEC
 go test ./...
 go run ./cmd/ahc probe -config deploy/config.yaml
 go run ./cmd/ahc once  -config deploy/config.yaml
-go run ./cmd/ahc serve -config deploy/config.yaml   # http://localhost:8080
+go run ./cmd/ahc serve -config deploy/config.yaml   # http://localhost:4653
 ```
 
 `.envrc` and `data/` are gitignored.
@@ -83,7 +83,9 @@ sudo mkdir -p /opt/ahc/data && sudo chown -R "$USER" /opt/ahc && cd /opt/ahc
 printf 'BLIZZARD_CLIENT_ID=%s\nBLIZZARD_CLIENT_SECRET=%s\nAHC_MCP_TOKEN=%s\n' 'YOUR_ID' 'YOUR_SECRET' "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 sudo chown 65532 data            # the image runs as distroless nonroot (uid 65532)
-echo "$GHCR_READ_PAT" | sudo docker login ghcr.io -u herrfennessey --password-stdin   # classic PAT, read:packages
+# The image is public, so no registry login is needed. If you make it private, log in with a
+# classic PAT (read:packages only); GHCR has historically not accepted fine-grained tokens.
+#   echo "$GHCR_READ_PAT" | sudo docker login ghcr.io -u herrfennessey --password-stdin
 sudo cp deploy/systemd/ahc-update.* /etc/systemd/system/ && sudo systemctl enable --now ahc-update.timer
 docker compose up -d
 ```
@@ -119,11 +121,11 @@ success, the last new data, and consecutive failures. `ahc health` and the optio
 
 ## Connect Claude (MCP)
 
-The container serves MCP over streamable HTTP at `http://<nuc>:8080/mcp`. Keep it on the
-tailnet, and set `AHC_MCP_TOKEN` so requests need `Authorization: Bearer <token>`.
+The container serves MCP over streamable HTTP at `http://<nuc>:4653/mcp` on your local
+network. Set `AHC_MCP_TOKEN` so requests need `Authorization: Bearer <token>`.
 
 ```sh
-claude mcp add --transport http ahc http://<nuc-tailnet-name>:8080/mcp \
+claude mcp add --transport http ahc http://<nuc>:4653/mcp \
   --header "Authorization: Bearer $AHC_MCP_TOKEN"
 ```
 

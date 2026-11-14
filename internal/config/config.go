@@ -83,7 +83,7 @@ type Config struct {
 
 	Alert Alert `yaml:"alert"`
 
-	Listen string `yaml:"listen"` // address for the web UI and /mcp, e.g. ":8080"; empty = neither
+	Listen string `yaml:"listen"` // address for the web UI and /mcp, e.g. ":4653"; empty = neither
 
 	// MCPToken, if set (env AHC_MCP_TOKEN), is required as "Authorization: Bearer <token>" on /mcp.
 	MCPToken string `yaml:"-"`
@@ -116,7 +116,7 @@ func Default() Config {
 		BackupKeep:           3,
 		StaleAfter:           3 * time.Hour,
 		DepositRate:          0.20,
-		Listen:               ":8080",
+		Listen:               ":4653",
 		Alert:                Alert{AfterFail: 3},
 	}
 }

@@ -8,4 +8,4 @@ services:
       - ./data:/data
       - ./config.yaml:/config.yaml:ro
     ports:
-      - "8080:8080"         # web UI + /mcp. Bind to the tailnet IP (e.g. "100.x.y.z:8080:8080") to keep it off the LAN
+      - "4653:4653"         # web UI + /mcp on your local network: http://<nuc>:4653
