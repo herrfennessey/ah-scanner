@@ -19,9 +19,11 @@ One Go binary, one SQLite file, one Docker container on the NUC.
 
 ## How it works
 
-Every 30 minutes the collector downloads both houses (gear and commodities, about 17 MB per
-round) with `If-Modified-Since`. Houses refresh about hourly, so roughly half the polls are
-free `304 Not Modified` answers. Each new snapshot is diffed against the auctions that were open
+Blizzard publishes each house once an hour at a stable second past the hour (about :18:50).
+In `follow` mode (the default) the collector learns that time per house and polls 15 s after
+it, retrying every 30 s until the new data appears, so each update is seen within about a
+minute. Polls use `If-Modified-Since`, so a check before the data changes is a free
+`304 Not Modified`. Each new snapshot is diffed against the auctions that were open
 before it:
 
 | Change | Classified as | Counts toward |
@@ -98,14 +100,19 @@ docker compose up -d
 
 ### Schedules
 
-The schedules are standard cron expressions in `config.yaml`, evaluated in Europe/Berlin and
-run inside the container (no host cron needed):
+Schedules live in `config.yaml` and run inside the container (no host cron needed):
 
 ```yaml
 schedule:
-  collect: "*/30 * * * *"   # ± jitter
-  nightly: "0 5 * * *"      # rollup, retention, backup
+  collect: follow           # poll each house just after it publishes; or a cron expression
+  nightly: "0 5 * * *"      # rollup, retention, backup (cron, Europe/Berlin)
 ```
+
+The Collector page shows how many seconds after each publish the data was fetched.
+
+**After editing `config.yaml`, run `docker compose up -d --force-recreate`, not `restart`.**
+The file is mounted individually, and most editors (and `sed -i`) replace the file, which a
+running container doesn't see.
 
 A nightly run missed while the container was down is caught up on the next start.
 

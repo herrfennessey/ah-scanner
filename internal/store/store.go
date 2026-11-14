@@ -481,3 +481,25 @@ func (s *Store) OpenCount(ctx context.Context, houseID int64, kind listing.Kind)
 	err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM auction WHERE house_id=? AND kind=? AND closed_at IS NULL`, houseID, string(kind)).Scan(&n)
 	return n, err
 }
+
+// PublishTimes returns the Last-Modified times of snapshots since `since`, per "house/kind",
+// oldest first. Used to learn when each house publishes.
+func (s *Store) PublishTimes(ctx context.Context, since int64) (map[string][]int64, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT house_id, kind, last_modified FROM snapshot
+		WHERE last_modified > 0 AND fetched_at >= ? ORDER BY fetched_at`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]int64{}
+	for rows.Next() {
+		var h, lm int64
+		var k string
+		if err := rows.Scan(&h, &k, &lm); err != nil {
+			return nil, err
+		}
+		key := fmt.Sprintf("%d/%s", h, k)
+		out[key] = append(out[key], lm)
+	}
+	return out, rows.Err()
+}

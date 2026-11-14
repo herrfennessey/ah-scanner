@@ -141,6 +141,7 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 .list-head h2 { margin: 0; font: 600 24px var(--display); }
 .list-head p { margin: 0; color: var(--muted); font-size: 14px; }
 .list-head .pill { margin-left: auto; }
+.names-note { padding: 10px 22px 0; margin: 0; }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 99px; border: 1px solid var(--line-hi); background: var(--bg-raise); font-size: 13px; color: var(--muted); }
 .table-panel { padding: 0; overflow: hidden; }
 .items { width: 100%; border-collapse: collapse; }

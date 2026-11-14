@@ -44,17 +44,31 @@ type Alert struct {
 	AfterFail int    `yaml:"after_fail"` // consecutive failed cycles before alerting (default 3)
 }
 
-// Schedule holds standard 5-field cron expressions, evaluated in Europe/Berlin.
+// Schedule holds standard 5-field cron expressions, evaluated in Europe/Berlin. Collect may
+// instead be "follow": poll each house just after it publishes (see Follow).
 type Schedule struct {
-	Collect string `yaml:"collect"` // snapshot cycle
+	Collect string `yaml:"collect"` // snapshot cycle, or "follow"
 	Nightly string `yaml:"nightly"` // rollup, retention, backup
 }
+
+// Follow tunes the publish-following collect mode.
+type Follow struct {
+	DefaultOffset time.Duration `yaml:"default_offset"` // publish time past the hour until learned (observed :18:50)
+	Lead          time.Duration `yaml:"lead"`           // poll this long after the expected publish
+	Retry         time.Duration `yaml:"retry"`          // re-poll interval while a publish is due
+	Window        time.Duration `yaml:"window"`         // how long to keep retrying a late publish
+	CatchUp       time.Duration `yaml:"catch_up"`       // slow poll interval once a publish is very late
+}
+
+// IsFollow reports whether a collect schedule means publish-following mode.
+func IsFollow(s string) bool { return strings.EqualFold(strings.TrimSpace(s), "follow") }
 
 type Config struct {
 	Region       string        `yaml:"region"`
 	RulesetID    int           `yaml:"ruleset_id"`
 	Houses       []House       `yaml:"houses"`
 	Schedule     Schedule      `yaml:"schedule"`
+	Follow       Follow        `yaml:"follow"`
 	Jitter       time.Duration `yaml:"jitter"` // random ± offset applied to each collect run
 	RawRetention time.Duration `yaml:"raw_retention"`
 	DataDir      string        `yaml:"data_dir"`
@@ -107,7 +121,7 @@ func Default() Config {
 		RawRetention:         48 * time.Hour,
 		DataDir:              "/data",
 		Locale:               "en_GB",
-		ItemLookupsPerCycle:  500,
+		ItemLookupsPerCycle:  4000,
 		AmbiguousWeight:      0.25,
 		AuctionRetentionDays: 30,
 		SnapshotFullDays:     30,
@@ -156,6 +170,9 @@ func Load(path string) (Config, error) {
 	c.ClientSecret = os.Getenv("BLIZZARD_CLIENT_SECRET")
 	c.MCPToken = os.Getenv("AHC_MCP_TOKEN")
 	for name, expr := range map[string]string{"collect": c.Schedule.Collect, "nightly": c.Schedule.Nightly} {
+		if name == "collect" && IsFollow(expr) {
+			continue
+		}
 		if _, err := ParseCron(expr); err != nil {
 			return c, fmt.Errorf("schedule.%s %q: %w", name, expr, err)
 		}

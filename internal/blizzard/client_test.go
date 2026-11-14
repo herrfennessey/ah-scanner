@@ -2,6 +2,7 @@ package blizzard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -207,5 +208,18 @@ func TestParseIndex(t *testing.T) {
 	want := "[{2 Alliance Auction House alliance} {6 Horde Auction House horde} {7 Blackwater Auction House blackwater} {9 Something horde}]"
 	if got != want {
 		t.Fatalf("got %s", got)
+	}
+}
+
+func TestBadCredentialsFailFast(t *testing.T) {
+	f, c, sleeps := newFake(t, func(w http.ResponseWriter, r *http.Request, _ int32) { io.WriteString(w, body) })
+	c.ClientSecret = "wrong"
+	_, err := fetch(t, c, "")
+	var ce *CredentialsError
+	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "BLIZZARD_CLIENT_SECRET") {
+		t.Fatalf("want credentials error, got %v", err)
+	}
+	if f.hits.Load() != 0 || len(*sleeps) != 0 {
+		t.Fatalf("should not retry: hits=%d sleeps=%v", f.hits.Load(), *sleeps)
 	}
 }
