@@ -1,0 +1,48 @@
+# ahc configuration (/opt/ahc/config.yaml on the NUC). Secrets are NOT here: they come from
+# the environment (/opt/ahc/.env on the NUC, .envrc locally):
+#   BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET   Blizzard API client
+#   AHC_MCP_TOKEN                                optional bearer token required on /mcp
+region: eu
+ruleset_id: 1            # every ruleset id returns the same houses today; keep configurable
+houses:
+  # The index lists 5 houses per faction with identical names (one per realm group), so pin
+  # the id. 113/116 are the EU group whose Elemental Air matched (~190 listed) on 2026-11-14.
+  # `ahc probe -all` lists every house with its size if you need to re-check.
+  - {id: 113, faction: horde}         # 5% cut
+  - {id: 116, faction: blackwater}    # 15% cut
+  # View only: a Horde character on a PvP realm can't use the Alliance AH, but Alliance players
+  # buy and sell on Blackwater, so their home prices decide whether a Horde → Blackwater flip
+  # has buyers. Prices and supply only, no auction tracking (~+1.5 GB).
+  #
+  # How 110/113/116 were identified as one realm group (2026-11-14): auction IDs are global, so
+  # they can't tell. Prices can: arbitrage pulls a group's faction and Blackwater prices together.
+  # Across 489 commodities in all six large houses, the grouping {110,113,116} + {111,114,117}
+  # fit best in 93% of bootstrap resamples (Alliance 111 instead: 7%; Blackwater 117: 0%).
+  - {id: 110, faction: alliance, price_only: true}
+
+# Cron schedules (minute hour day month weekday), Europe/Berlin.
+schedule:
+  collect: "*/30 * * * *"   # snapshot cycle; houses refresh ~hourly, so ~half the polls are free 304s
+  nightly: "0 5 * * *"      # rollup, retention, compressed backup
+jitter: 3m                  # random ± offset on each collect run
+stale_after: 3h             # alert when polls succeed but no new data arrives (frozen endpoint)
+
+listen: ":8080"             # web UI at /, MCP at /mcp; empty disables both
+data_dir: /data
+locale: en_GB
+raw_retention: 48h          # raw zstd bodies kept for reprocessing
+item_lookups_per_cycle: 500 # item names/icons; all ~6k items resolve within a few cycles
+
+# Retention (steady state ≈ 7 GB database at ~1M new auctions/day, see README).
+auction_retention_days: 30  # closed auctions + partial-sale events (sell timing reads ≤ 28 days)
+snapshot_full_days: 30      # per-item price snapshots at full resolution
+snapshot_thin_hours: 6      # then one per 6 hours
+snapshot_max_days: 180      # then dropped (daily rows are kept forever)
+backup_keep: 3              # nightly zstd-compressed backups in /data/backup
+
+ambiguous_weight: 0.25      # share of cancelled / expired-or-sold units counted as sold (calibrate in week 1)
+deposit_rate: 0.20          # deposit ≈ vendor sell price × this (unconfirmed for Forever)
+
+alert:
+  url: ""                   # ntfy topic URL or Home Assistant webhook; empty = no push alerts
+  after_fail: 3             # consecutive failed cycles before alerting

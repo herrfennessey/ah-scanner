@@ -1,0 +1,4 @@
+{"_links":{"self":{"href":"x"}},"auctions":[
+  {"id":2001,"item":{"id":7069},"quantity":10,"unit_price":15000,"time_left":"LONG"},
+  {"id":2002,"item":{"id":7068},"quantity":4,"unit_price":22000,"time_left":"MEDIUM"}
+]}

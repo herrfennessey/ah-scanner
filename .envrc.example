@@ -1,0 +1,5 @@
+# Copy to .envrc (gitignored), fill in, then `direnv allow`.
+export BLIZZARD_CLIENT_ID="REPLACE_ME"
+export BLIZZARD_CLIENT_SECRET="REPLACE_ME"
+export AHC_DATA_DIR="$PWD/data"
+# export AHC_MCP_TOKEN=""   # optional: require a bearer token on /mcp

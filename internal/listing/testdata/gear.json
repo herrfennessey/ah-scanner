@@ -1,0 +1,8 @@
+{"_links":{"self":{"href":"https://eu.api.blizzard.com/data/wow/ruleset/1/auctions/2?namespace=dynamic-forever-eu"}},
+ "connected_realm":{"href":"x"},
+ "auctions":[
+  {"id":1001,"item":{"id":4304},"bid":9000,"buyout":12000,"quantity":20,"time_left":"VERY_LONG"},
+  {"id":1002,"item":{"id":15215,"rand":1101,"seed":12345},"bid":50000,"buyout":80000,"quantity":1,"time_left":"LONG"},
+  {"id":1003,"item":{"id":2589},"bid":500,"quantity":5,"time_left":"SHORT"}
+ ],
+ "id":2,"name":"Horde Auction House"}

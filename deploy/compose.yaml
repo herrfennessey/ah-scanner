@@ -1,0 +1,11 @@
+# /opt/ahc/compose.yaml on the NUC
+services:
+  ahc:
+    image: ghcr.io/herrfennessey/ahc:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env          # BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET, AHC_MCP_TOKEN (chmod 600); optional IMAGE_TAG
+    volumes:
+      - ./data:/data
+      - ./config.yaml:/config.yaml:ro
+    ports:
+      - "8080:8080"         # web UI + /mcp. Bind to the tailnet IP (e.g. "100.x.y.z:8080:8080") to keep it off the LAN

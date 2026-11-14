@@ -1,0 +1,7 @@
+.git
+.envrc
+.env
+data/
+.claude/
+.worktrees/
+docs/superpowers/
