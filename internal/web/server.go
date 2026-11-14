@@ -391,7 +391,13 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		cl = append(cl, classCount{n, c})
 	}
 	sort.Slice(cl, func(i, j int) bool { return cl[i].Count > cl[j].Count })
-	writeJSON(w, map[string]any{"house": h, "total": total, "rows": rows[offset:end], "classes": cl, "all_count": len(all)})
+	unnamed := 0
+	for _, r := range all {
+		if r.Class == "" && strings.HasPrefix(r.Name, "Item #") {
+			unnamed++
+		}
+	}
+	writeJSON(w, map[string]any{"house": h, "total": total, "rows": rows[offset:end], "classes": cl, "all_count": len(all), "unnamed": unnamed})
 }
 
 func ch(r ItemRow) float64 {

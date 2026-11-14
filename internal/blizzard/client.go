@@ -158,7 +158,11 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("token: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		err := fmt.Errorf("token: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusBadRequest {
+			return "", &CredentialsError{err}
+		}
+		return "", err
 	}
 	var tr struct {
 		AccessToken string `json:"access_token"`
@@ -174,6 +178,14 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 	c.expires = c.now().Add(time.Duration(tr.ExpiresIn) * time.Second)
 	return c.token, nil
 }
+
+// CredentialsError means Blizzard rejected the client ID or secret.
+type CredentialsError struct{ err error }
+
+func (e *CredentialsError) Error() string {
+	return e.err.Error() + " (check BLIZZARD_CLIENT_ID and BLIZZARD_CLIENT_SECRET)"
+}
+func (e *CredentialsError) Unwrap() error { return e.err }
 
 // HTTPError is a non-retryable (or retries-exhausted) HTTP status.
 type HTTPError struct {
@@ -217,6 +229,10 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values, ifModif
 			}
 		}
 		tok, err := c.Token(ctx)
+		var ce *CredentialsError
+		if errors.As(err, &ce) {
+			return Response{}, err // retrying can't fix wrong credentials
+		}
 		if err != nil {
 			lastErr = err
 			continue

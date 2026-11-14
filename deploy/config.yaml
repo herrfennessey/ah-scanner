@@ -20,18 +20,26 @@ houses:
   # fit best in 93% of bootstrap resamples (Alliance 111 instead: 7%; Blackwater 117: 0%).
   - {id: 110, faction: alliance, price_only: true}
 
-# Cron schedules (minute hour day month weekday), Europe/Berlin.
+# When to collect. "follow" polls each house just after Blizzard publishes it (hourly, at a
+# stable second past the hour that each house learns from its own history), so new data is
+# seen within about a minute. A cron expression (e.g. "*/30 * * * *") polls on a fixed clock.
 schedule:
-  collect: "*/30 * * * *"   # snapshot cycle; houses refresh ~hourly, so ~half the polls are free 304s
-  nightly: "0 5 * * *"      # rollup, retention, compressed backup
-jitter: 3m                  # random ± offset on each collect run
+  collect: follow
+  nightly: "0 5 * * *"      # rollup, retention, compressed backup (cron, Europe/Berlin)
+follow:
+  default_offset: 18m50s    # publish time past the hour until learned (observed :18:49–:18:56)
+  lead: 15s                 # poll this long after the expected publish
+  retry: 30s                # re-poll while a publish is due
+  window: 10m               # then fall back to...
+  catch_up: 15m             # ...a slow poll until it shows up (and re-learn the time)
+jitter: 3m                  # cron mode only: random ± offset on each collect run
 stale_after: 3h             # alert when polls succeed but no new data arrives (frozen endpoint)
 
 listen: ":4653"             # web UI at /, MCP at /mcp ("GOLD" on a phone keypad); empty disables both
 data_dir: /data
 locale: en_GB
 raw_retention: 48h          # raw zstd bodies kept for reprocessing
-item_lookups_per_cycle: 500 # item names/icons; all ~6k items resolve within a few cycles
+item_lookups_per_cycle: 4000 # item names/icons, 2 requests each; a new install is named within ~2 cycles
 
 # Retention (steady state ≈ 7 GB database at ~1M new auctions/day, see README).
 auction_retention_days: 30  # closed auctions + partial-sale events (sell timing reads ≤ 28 days)

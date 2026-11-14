@@ -107,10 +107,6 @@ func (c *Collector) Setup(ctx context.Context) error {
 // Run loops forever on the cron schedules in config: a collect cycle (± jitter) and the
 // nightly job. A nightly run missed while the process was down is caught up at startup.
 func (c *Collector) Run(ctx context.Context) error {
-	collect, err := config.ParseCron(c.Cfg.Schedule.Collect)
-	if err != nil {
-		return fmt.Errorf("schedule.collect: %w", err)
-	}
 	nightly, err := config.ParseCron(c.Cfg.Schedule.Nightly)
 	if err != nil {
 		return fmt.Errorf("schedule.nightly: %w", err)
@@ -120,6 +116,13 @@ func (c *Collector) Run(ctx context.Context) error {
 		c.Log.Info("nightly job overdue, running it now", "last", last)
 		c.Nightly(ctx, time.Now())
 	}
+	if FollowEnabled(c.Cfg) {
+		return c.runFollow(ctx, nightly)
+	}
+	collect, err := config.ParseCron(c.Cfg.Schedule.Collect)
+	if err != nil {
+		return fmt.Errorf("schedule.collect: %w", err)
+	}
 	nextCollect := c.jittered(collect.Next(time.Now().In(rollup.Berlin)))
 	nextNightly := nightly.Next(time.Now().In(rollup.Berlin))
 	for {
@@ -128,12 +131,8 @@ func (c *Collector) Run(ctx context.Context) error {
 			next, job = nextNightly, "nightly"
 		}
 		c.Log.Info("sleeping", "job", job, "at", next.In(rollup.Berlin).Format(time.DateTime))
-		t := time.NewTimer(time.Until(next))
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			return ctx.Err()
-		case <-t.C:
+		if err := waitUntil(ctx, next); err != nil {
+			return err
 		}
 		now := time.Now().In(rollup.Berlin)
 		if job == "nightly" {
@@ -162,7 +161,11 @@ func (c *Collector) collectCycle(ctx context.Context) {
 	if err := c.Cycle(ctx); err != nil {
 		c.Log.Error("cycle failed", "err", err)
 	}
-	// Keep today's daily rows fresh for the UI, at most once an hour.
+	c.hourlyRollup(ctx)
+}
+
+// hourlyRollup keeps today's daily rows fresh for the UI, at most once an hour.
+func (c *Collector) hourlyRollup(ctx context.Context) {
 	local := time.Now().In(rollup.Berlin)
 	if h := local.Format("2006-01-02T15"); h != c.lastRollupHour {
 		c.lastRollupHour = h
@@ -200,10 +203,11 @@ func (c *Collector) Cycle(ctx context.Context) error {
 }
 
 type Result struct {
-	Outcome   string // applied | not_modified | identical
-	NAuctions int
-	New, Seen int
-	Units     map[string]int64
+	LastModified int64  // server Last-Modified of the body, when one was received
+	Outcome      string // applied | not_modified | identical
+	NAuctions    int
+	New, Seen    int
+	Units        map[string]int64
 }
 
 func (c *Collector) fetchAndApply(ctx context.Context, h House, kind listing.Kind) (Result, error) {
@@ -232,6 +236,7 @@ func (c *Collector) fetchAndApply(ctx context.Context, h House, kind listing.Kin
 	} else if dup {
 		os.Remove(fr.Path)
 		res.Outcome = "identical"
+		res.LastModified = blizzard.ParseHTTPTime(fr.LastModified)
 		return res, nil
 	}
 
@@ -259,13 +264,13 @@ func (c *Collector) fetchAndApply(ctx context.Context, h House, kind listing.Kin
 			return res, err
 		}
 		c.Log.Info("price snapshot applied", "house", h.ID, "kind", kind, "auctions", len(cur))
-		return Result{Outcome: "applied", NAuctions: len(cur)}, nil
+		return Result{Outcome: "applied", NAuctions: len(cur), LastModified: sn.LastModified}, nil
 	}
 	ar, err := c.Store.ApplySnapshot(ctx, sn, cur)
 	if err != nil {
 		return res, err
 	}
-	res = Result{Outcome: "applied", NAuctions: len(cur), New: ar.New, Seen: ar.Seen, Units: ar.Events}
+	res = Result{Outcome: "applied", NAuctions: len(cur), New: ar.New, Seen: ar.Seen, Units: ar.Events, LastModified: sn.LastModified}
 	c.Log.Info("snapshot applied", "house", h.ID, "kind", kind, "auctions", len(cur), "new", ar.New,
 		"sold", ar.Events["sold"]+ar.Events["partial"], "cancelled", ar.Events["cancelled"], "expired_or_sold", ar.Events["expired_or_sold"])
 	return res, nil
@@ -394,3 +399,22 @@ func (c *Collector) maybeAlert(ctx context.Context) {
 }
 
 var alertClient = &http.Client{Timeout: 15 * time.Second}
+
+// waitUntil sleeps until the wall-clock time t. It waits in chunks of at most 30 s and re-reads
+// the clock each time: Go timers run on a monotonic clock that stops while the host is
+// suspended, so one long timer would fire late by however long the machine slept.
+func waitUntil(ctx context.Context, t time.Time) error {
+	for {
+		d := time.Until(t)
+		if d <= 0 {
+			return nil
+		}
+		tm := time.NewTimer(min(d, 30*time.Second))
+		select {
+		case <-ctx.Done():
+			tm.Stop()
+			return ctx.Err()
+		case <-tm.C:
+		}
+	}
+}

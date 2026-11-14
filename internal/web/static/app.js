@@ -182,6 +182,7 @@ async function refreshList(append) {
         <p>${count(state.total)} items · sorted by ${sorted}</p>
         <span class="pill">${crest(state.house).replace('class="crest"', 'class="crest" style="width:18px;height:18px"')}${factionName(state.house)} · PvP · EU</span>
       </div>
+      ${data.unnamed > 20 ? `<p class="fine names-note">Still looking up item names and icons: ${count(data.unnamed)} of ${count(data.all_count)} to go. They fill in with each scan (every 30 minutes); until then items show as "Item #id".</p>` : ""}
       ${state.rows.length ? `<div class="scroll-x"><table class="items">
         <thead><tr>${COLS.map((c) => `<th class="${c.opt ? "opt" : ""}" ${state.sort === c.key ? `aria-sort="${state.dir === "asc" ? "ascending" : "descending"}"` : ""}><button data-sort="${c.key}">${c.label}</button></th>`).join("")}</tr></thead>
         <tbody>${state.rows.map(rowHTML).join("")}</tbody>
@@ -493,6 +494,7 @@ async function renderStatus() {
         <div class="kv"><div><b>Last success</b></div><div class="val">${ago(Date.parse(f.last_success) / 1000)}</div></div>
         <div class="kv"><div><b>Last result</b><small>${count(f.applied_count)} with new data · ${count(f.not_modified_count)} unchanged</small></div><div class="val">${esc(resultText[f.last_result] || f.last_result)}</div></div>
         <div class="kv"><div><b>Auctions</b></div><div class="val">${count(f.n_auctions)}</div></div>
+        ${f.publish_lag_seconds ? `<div class="kv"><div><b>Fetched after publish</b><small>how long after Blizzard published the last update</small></div><div class="val">${f.publish_lag_seconds < 120 ? `${f.publish_lag_seconds} s` : `${Math.round(f.publish_lag_seconds / 60)} min`}</div></div>` : ""}
         ${f.last_error ? `<p class="fine error">${esc(f.last_error)}</p>` : ""}
       </section>`).join("")}</div>`;
 }

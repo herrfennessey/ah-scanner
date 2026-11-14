@@ -25,6 +25,7 @@ type FeedStatus struct {
 	NAuctions           int       `json:"n_auctions,omitempty"`
 	NotModifiedCount    int       `json:"not_modified_count"`
 	AppliedCount        int       `json:"applied_count"`
+	LagSeconds          int64     `json:"publish_lag_seconds,omitempty"` // how long after publishing we fetched it
 }
 
 // Status is written to /data/status.json after every cycle.
@@ -104,6 +105,15 @@ func (s *Status) KeepFeeds(houses []House) {
 		if !keep[k] {
 			delete(s.Feeds, k)
 		}
+	}
+}
+
+// RecordLag stores how many seconds after Blizzard published a feed we fetched it.
+func (s *Status) RecordLag(h House, k listing.Kind, secs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if f := s.Feeds[FeedKey(h, k)]; f != nil {
+		f.LagSeconds = secs
 	}
 }
 
