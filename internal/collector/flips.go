@@ -14,7 +14,7 @@ import (
 func (c *Collector) FlipHouses() []report.FlipHouse {
 	var out []report.FlipHouse
 	for _, h := range c.Houses {
-		out = append(out, report.FlipHouse{ID: h.ID, Faction: h.Faction, Cut: h.Cut, ViewOnly: h.ViewOnly, Tracked: !h.PriceOnly})
+		out = append(out, report.FlipHouse{ID: h.ID, Faction: h.Faction, Cut: h.Cut, DepositMult: h.Deposit, ViewOnly: h.ViewOnly, Tracked: !h.PriceOnly})
 	}
 	return out
 }

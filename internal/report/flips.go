@@ -21,11 +21,13 @@ import (
 
 // FlipHouse is a house as the flip planner sees it.
 type FlipHouse struct {
-	ID       int64   `json:"id"`
-	Faction  string  `json:"faction"`
-	Cut      float64 `json:"cut"`
-	ViewOnly bool    `json:"view_only"` // can't trade here (Alliance from a Horde character)
-	Tracked  bool    `json:"tracked"`   // auctions tracked, so sales are known
+	ID      int64   `json:"id"`
+	Faction string  `json:"faction"`
+	Cut     float64 `json:"cut"`
+	// DepositMult scales FlipItem.Deposit for listings here (Blackwater 5×); 0 means 1.
+	DepositMult float64 `json:"deposit_mult,omitempty"`
+	ViewOnly    bool    `json:"view_only"` // can't trade here (Alliance from a Horde character)
+	Tracked     bool    `json:"tracked"`   // auctions tracked, so sales are known
 }
 
 // FlipLevel is one price level of an order book.
@@ -54,7 +56,7 @@ type FlipItem struct {
 	Item    int64                `json:"item"`
 	Variant string               `json:"variant,omitempty"`
 	Name    string               `json:"name"`
-	Deposit int64                `json:"deposit"` // estimated deposit per unit
+	Deposit int64                `json:"deposit"` // estimated faction-house deposit per unit
 	Houses  map[string]*FlipStat `json:"houses"`  // by faction
 }
 
@@ -292,11 +294,14 @@ type riskProfile struct {
 	MaxShare       float64 // most of the gold one flip may use
 	MinROI         float64
 	AllowVolatile  bool
+	// Relists: extra cancel-and-relist rounds (each losing a deposit) the profit must survive
+	// beyond the one already counted, so being undercut doesn't turn the flip into a loss.
+	Relists int
 }
 
 var riskProfiles = map[Risk]riskProfile{
-	RiskLow:    {MinSalesPerDay: 20, MaxClearDays: 0.25, MaxShare: 0.25, MinROI: 0.15},
-	RiskMedium: {MinSalesPerDay: 10, MaxClearDays: 0.5, MaxShare: 0.4, MinROI: 0.2},
+	RiskLow:    {MinSalesPerDay: 20, MaxClearDays: 0.25, MaxShare: 0.25, MinROI: 0.15, Relists: 2},
+	RiskMedium: {MinSalesPerDay: 10, MaxClearDays: 0.5, MaxShare: 0.4, MinROI: 0.2, Relists: 1},
 	RiskHigh:   {MinSalesPerDay: 4, MaxClearDays: 1.5, MaxShare: 0.6, MinROI: 0.3, AllowVolatile: true},
 }
 
@@ -322,6 +327,7 @@ type FlipOptions struct {
 	MinSales  float64 // separate sales per day
 	MinProfit int64   // default 0.25% of gold, between 10s and 50s
 	Volatile  bool    // allow items whose price swings
+	Relists   int     // extra lost deposits the profit must survive (from the risk level)
 	Limit     int
 	// Horde → Blackwater: the Alliance must buy it fast and pay more at home.
 	AllyEdge    float64 // your Blackwater price must be this much under Alliance's, default 0.05
@@ -347,6 +353,7 @@ func (o FlipOptions) withDefaults() FlipOptions {
 		o.MinSales = p.MinSalesPerDay
 	}
 	o.Volatile = o.Volatile || p.AllowVolatile
+	o.Relists = max(o.Relists, p.Relists)
 	if o.MinProfit <= 0 {
 		// Scales gently: a quick, sure 50s is worth showing whatever the budget.
 		o.MinProfit = min(5000, max(1000, o.Gold/400))
@@ -362,17 +369,20 @@ func (o FlipOptions) withDefaults() FlipOptions {
 
 // Flip is one recommended trade.
 type Flip struct {
-	ItemID        int64   `json:"item_id"`
-	Variant       string  `json:"variant,omitempty"`
-	Name          string  `json:"name"`
-	Kind          string  `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater, sold to Alliance players)"`
-	BuyHouse      string  `json:"buy_house"`
-	SellHouse     string  `json:"sell_house"`
-	BuyUnits      int64   `json:"buy_units"`
-	BuyUpTo       int64   `json:"buy_up_to_price"`
-	BuyCost       int64   `json:"buy_cost"`
-	SellAt        int64   `json:"sell_at"`
-	Profit        int64   `json:"expected_profit"` // after cut and deposit, if all sell at sell_at
+	ItemID    int64  `json:"item_id"`
+	Variant   string `json:"variant,omitempty"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater, sold to Alliance players)"`
+	BuyHouse  string `json:"buy_house"`
+	SellHouse string `json:"sell_house"`
+	BuyUnits  int64  `json:"buy_units"`
+	BuyUpTo   int64  `json:"buy_up_to_price"`
+	BuyCost   int64  `json:"buy_cost"`
+	SellAt    int64  `json:"sell_at"`
+	// Profit is after the cut and one lost deposit, if all sell at sell_at. A deposit comes back
+	// when the item sells; counting one lost anyway covers one cancel-and-relist after an undercut.
+	Profit        int64   `json:"expected_profit"`
+	DepositAtRisk int64   `json:"deposit_at_risk" jsonschema:"deposit paid to list your units, lost if they expire or you cancel to undercut (Blackwater's deposit is 5x a faction house's)"`
 	ROI           float64 `json:"roi"`
 	ShareOfGold   float64 `json:"share_of_gold"`
 	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the floor sales rate"`
@@ -389,6 +399,7 @@ type FlipFunnel struct {
 	NoBuyListing int `json:"not_listed_to_buy"`
 	SlowSales    int `json:"sells_too_slowly"`  // resale market too slow or too thin
 	Falling      int `json:"price_falling"`     // resale would be well under market value: a slide
+	Deposit      int `json:"deposit_too_high"`  // a few undercut-and-relist rounds would eat the profit
 	NoGap        int `json:"no_profitable_gap"` // nothing cheap enough for the margin
 	OverBudget   int `json:"needs_more_gold"`   // gap exists but not within this budget/profit floor
 	Passed       int `json:"passed"`
@@ -445,6 +456,8 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 					fn.SlowSales++
 				case "falling":
 					fn.Falling++
+				case "deposit":
+					fn.Deposit++
 				case "gap":
 					fn.NoGap++
 				case "budget":
@@ -497,8 +510,8 @@ func nearSupply(s *FlipStat, price, skip int64) int64 {
 // stock could be worth less again by the time it sells.
 const fallingFloor = 0.85
 
-// planOne decides one item on one route. reason is "" (a flip), "slow", "gap", "budget" or
-// "falling".
+// planOne decides one item on one route. reason is "" (a flip), "slow", "gap", "budget",
+// "falling" or "deposit".
 func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, maxSpend int64, o FlipOptions) (Flip, string) {
 	var rate float64 // units/day the resale market absorbs (floor)
 	var salesDay float64
@@ -550,6 +563,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		return Flip{}, "slow"
 	}
 	relist := kind == "relist"
+	dep := float64(it.Deposit) // deposit per unit on the house we sell on
+	if sell.DepositMult > 0 {
+		dep *= sell.DepositMult
+	}
 
 	// Resale price: the ceiling, or just under the cheapest competing listing. In the same house
 	// the competition is what's left after our own purchases, so iterate until stable.
@@ -559,8 +576,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	var units, cost, upTo, left, capUnits int64
 	fill := func() {
-		net := float64(sellAt)*(1-sell.Cut) - float64(it.Deposit)
-		maxBuy := int64(net / (1 + o.MinROI))
+		net := float64(sellAt)*(1-sell.Cut) - dep
+		// A unit is worth buying only if it keeps the minimum return and its margin also covers
+		// the extra relist deposits, so a few dear units can't sink the whole flip.
+		maxBuy := int64(min(net/(1+o.MinROI), net-float64(o.Relists)*dep))
 		units, cost, upTo, left = 0, 0, 0, 0
 		if relist {
 			// What we buy here leaves the band and comes back into it at our price, so the
@@ -620,13 +639,17 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	if units == 0 {
 		// Is there a gap at all, ignoring the budget?
-		net := float64(sellAt)*(1-sell.Cut) - float64(it.Deposit)
-		if float64(b.Book[0].P) <= net/(1+o.MinROI) {
-			return Flip{}, "budget"
+		net := float64(sellAt)*(1-sell.Cut) - dep
+		p := float64(b.Book[0].P)
+		switch {
+		case p > net/(1+o.MinROI):
+			return Flip{}, "gap"
+		case p > net-float64(o.Relists)*dep:
+			return Flip{}, "deposit" // a margin, but not one that survives being undercut
 		}
-		return Flip{}, "gap"
+		return Flip{}, "budget"
 	}
-	net := float64(sellAt)*(1-sell.Cut) - float64(it.Deposit)
+	net := float64(sellAt)*(1-sell.Cut) - dep
 	profit := int64(math.Round(net*float64(units))) - cost
 	roi := float64(profit) / float64(cost)
 	if roi < o.MinROI {
@@ -634,6 +657,11 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	if profit < o.MinProfit {
 		return Flip{}, "budget"
+	}
+	depositAtRisk := int64(math.Round(dep * float64(units)))
+	if profit-int64(o.Relists)*depositAtRisk < o.MinProfit {
+		// Undercut o.Relists more times, the deposits would eat the profit.
+		return Flip{}, "deposit"
 	}
 	if why == "" {
 		if kind == "relist" {
@@ -650,7 +678,8 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	days := float64(units+competing) / rate
 	return Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
 		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Profit: profit, ROI: roi,
-		DaysToSell: days, Competing: competing, ProfitPerDay: int64(float64(profit) / math.Max(days, 1.0/24)),
+		DepositAtRisk: depositAtRisk,
+		DaysToSell:    days, Competing: competing, ProfitPerDay: int64(float64(profit) / math.Max(days, 1.0/24)),
 		SalesPerDay: salesDay, AlliancePrice: allyPrice, Why: why}, ""
 }
 

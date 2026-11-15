@@ -23,6 +23,9 @@ type House struct {
 	Name    string `yaml:"name"`    // optional exact name, to disambiguate when several houses share a faction
 	// Cut is the AH cut on sales (0.05 faction, 0.15 Blackwater). Defaults by faction.
 	Cut *float64 `yaml:"cut"`
+	// DepositFactor multiplies deposit_rate for this house: Blackwater's deposit is 5× a
+	// faction house's. Defaults by faction (5 Blackwater, 1 otherwise).
+	DepositFactor *float64 `yaml:"deposit_factor"`
 	// ViewOnly marks a house you can't trade on (the other faction on a PvP realm). It is
 	// still scanned, because its prices and sales drive demand on the shared Blackwater house.
 	ViewOnly bool `yaml:"view_only"`
@@ -43,6 +46,17 @@ func (h House) AHCut() float64 {
 		return 0.15
 	}
 	return 0.05
+}
+
+// DepositMult returns the configured or default deposit multiplier for this house.
+func (h House) DepositMult() float64 {
+	if h.DepositFactor != nil {
+		return *h.DepositFactor
+	}
+	if strings.EqualFold(h.Faction, "blackwater") {
+		return 5
+	}
+	return 1
 }
 
 type Alert struct {
@@ -97,8 +111,9 @@ type Config struct {
 	// StaleAfter flags a feed whose polls succeed but bring no new data (endpoint frozen).
 	StaleAfter time.Duration `yaml:"stale_after"`
 
-	// DepositRate estimates the AH deposit as a share of the item's vendor sell price
-	// (unconfirmed for Forever; set it from what the in-game posting window shows).
+	// DepositRate estimates a faction house's AH deposit as a share of the item's vendor sell
+	// price (unconfirmed for Forever; set it from what the in-game posting window shows).
+	// Each house scales it by its deposit_factor.
 	DepositRate float64 `yaml:"deposit_rate"`
 
 	Alert Alert `yaml:"alert"`
