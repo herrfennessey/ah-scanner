@@ -388,6 +388,7 @@ type FlipFunnel struct {
 	Candidates   int `json:"candidates"`
 	NoBuyListing int `json:"not_listed_to_buy"`
 	SlowSales    int `json:"sells_too_slowly"`  // resale market too slow or too thin
+	Falling      int `json:"price_falling"`     // resale would be well under market value: a slide
 	NoGap        int `json:"no_profitable_gap"` // nothing cheap enough for the margin
 	OverBudget   int `json:"needs_more_gold"`   // gap exists but not within this budget/profit floor
 	Passed       int `json:"passed"`
@@ -442,6 +443,8 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 					flips = append(flips, f)
 				case "slow":
 					fn.SlowSales++
+				case "falling":
+					fn.Falling++
 				case "gap":
 					fn.NoGap++
 				case "budget":
@@ -489,12 +492,19 @@ func nearSupply(s *FlipStat, price, skip int64) int64 {
 	return max(0, n-skip)
 }
 
-// planOne decides one item on one route. reason is "" (a flip), "slow", "gap" or "budget".
+// fallingFloor: below high risk, a resale price under this share of the reference market value
+// means the market is sliding (a steady fall that day-level volatility doesn't catch), and the
+// stock could be worth less again by the time it sells.
+const fallingFloor = 0.85
+
+// planOne decides one item on one route. reason is "" (a flip), "slow", "gap", "budget" or
+// "falling".
 func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, maxSpend int64, o FlipOptions) (Flip, string) {
 	var rate float64 // units/day the resale market absorbs (floor)
 	var salesDay float64
 	var ceiling int64 // highest sensible resale price
 	var allyPrice int64
+	var refFair int64 // market value the resale is judged against for a slide
 	var why string
 	switch kind {
 	case "alliance":
@@ -514,6 +524,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "gap"
 		}
 		ceiling = int64(float64(allyPrice) * (1 - o.AllyEdge))
+		refFair = a.Fair
 		rate = math.Max(s.RobustPerDay, o.AllyCapture*a.RobustPerDay)
 		salesDay = a.SalesPerDay
 		why = fmt.Sprintf("Alliance pays %s at home and buys %.0f times a day; yours on Blackwater is cheaper", Gold(allyPrice), a.SalesPerDay)
@@ -522,6 +533,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "slow"
 		}
 		ceiling = s.Fair // never bet on the price going above market value
+		refFair = s.Fair
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
 	}
@@ -602,6 +614,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	if (units == 0 && capUnits <= 0) || (relist && units > 0 && nearSupply(s, sellAt, 0) > clearCap) {
 		return Flip{}, "slow" // too much competing supply near the resale price
+	}
+	if !o.Volatile && refFair > 0 && float64(sellAt) < fallingFloor*float64(refFair) {
+		return Flip{}, "falling"
 	}
 	if units == 0 {
 		// Is there a gap at all, ignoring the budget?

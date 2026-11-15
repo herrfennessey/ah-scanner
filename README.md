@@ -13,13 +13,15 @@ default):
 Risk is how long your gold may sit in stock. Your units plus everything others list within 10%
 of your price must sell out at the floor sales rate within:
 
-| Risk | Sold out within | Sales a day | Gold per flip | Min return | Price-swinging items |
+| Risk | Sold out within | Sales a day | Gold per flip | Min return | Swinging or sliding prices |
 |------|-----------------|-------------|---------------|------------|----------------------|
 | low (default) | ~6 h | 20+ | 25% | 15% | no |
 | medium | ~12 h | 10+ | 40% | 20% | no |
 | high | ~1.5 days | 4+ | 60% | 30% | yes |
 
-Flips are ranked by profit per day of holding, so fast movers come first; resale is never
+Below high risk, sliding markets are skipped too: a resale more than 15% under market value
+(the Alliance's, for Alliance flips) means the price is falling. Flips are ranked by profit per
+day of holding, so fast movers come first; resale is never
 above market value, nor on Blackwater above the dearer of the Horde and Alliance prices
 (every Blackwater buyer can buy at home instead).
 
