@@ -218,3 +218,26 @@ func TestRelistPriceFoundBeforeSupplyCheck(t *testing.T) {
 		t.Fatalf("%+v", f)
 	}
 }
+
+func TestBlackwaterCappedByHomePrices(t *testing.T) {
+	// The Dreamfoil case: Blackwater's market value (37s) is left over from yesterday; 21 sit at
+	// 20.95s, but Horde has 2,600 at 15.80s and Alliance 485 at 16.65s. Nobody pays 37s.
+	it := FlipItem{Item: 13463, Name: "Dreamfoil", Houses: map[string]*FlipStat{
+		"blackwater": {Fair: 3719, Min: 2095, Listed: 38, Sales: 30, SalesPerDay: 35, RobustPerDay: 190,
+			Book: []FlipLevel{{2095, 21}, {5619, 17}}},
+		"horde":    {Fair: 1910, Min: 1580, Listed: 2592, Sales: 255, SalesPerDay: 295, RobustPerDay: 3780, Book: []FlipLevel{{1580, 24}, {1600, 583}}},
+		"alliance": {Fair: 1697, Min: 1665, Listed: 485, Sales: 18, SalesPerDay: 52, RobustPerDay: 545},
+	}}
+	for _, r := range []Risk{RiskLow, RiskMedium, RiskHigh} {
+		for _, f := range planRisk([]FlipItem{it}, 40, r) {
+			if f.SellHouse == "blackwater" && f.SellAt >= 1665 {
+				t.Fatalf("%s: sells on Blackwater above both home prices: %+v", r, f)
+			}
+		}
+	}
+	// With none listed on the Alliance side, Alliance buyers have no cheaper option: no cap.
+	it.Houses["alliance"].Min = 0
+	if c := blackwaterHomeCap(it, true); c != 0 {
+		t.Fatalf("cap %d", c)
+	}
+}

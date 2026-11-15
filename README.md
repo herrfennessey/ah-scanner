@@ -20,7 +20,8 @@ of your price must sell out at the floor sales rate within:
 | high | ~1.5 days | 4+ | 60% | 30% | yes |
 
 Flips are ranked by profit per day of holding, so fast movers come first; resale is never
-above market value.
+above market value, nor on Blackwater above the dearer of the Horde and Alliance prices
+(every Blackwater buyer can buy at home instead).
 
 Plus **Browse** (every item, price history, when-to-post heatmap) and the same data as MCP
 tools for Claude at `/mcp`.

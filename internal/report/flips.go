@@ -525,6 +525,13 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
 	}
+	if sell.Faction == "blackwater" {
+		// Every Blackwater buyer has a faction house at home: nobody pays more on Blackwater
+		// than the dearer of the two home prices (a stale market value can say otherwise).
+		if home := blackwaterHomeCap(it, ally != nil); home > 0 && home-1 < ceiling {
+			ceiling = home - 1
+		}
+	}
 	// Everything near our price must clear within MaxClear: our units and the competition.
 	clearCap := int64(rate * o.MaxClear)
 	if clearCap < 1 {
@@ -630,6 +637,25 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Profit: profit, ROI: roi,
 		DaysToSell: days, Competing: competing, ProfitPerDay: int64(float64(profit) / math.Max(days, 1.0/24)),
 		SalesPerDay: salesDay, AlliancePrice: allyPrice, Why: why}, ""
+}
+
+// blackwaterHomeCap is the most a Blackwater buyer would pay: the higher of the Horde and
+// Alliance prices, since each buys at home when that's cheaper. 0 means no cap: a faction with
+// none listed at home (or an untracked Alliance) can only buy it on Blackwater.
+func blackwaterHomeCap(it FlipItem, allianceKnown bool) int64 {
+	homes := []string{"horde"}
+	if allianceKnown {
+		homes = append(homes, "alliance")
+	}
+	var c int64
+	for _, f := range homes {
+		st := it.Houses[f]
+		if st == nil || st.Min <= 0 {
+			return 0
+		}
+		c = max(c, st.Min)
+	}
+	return c
 }
 
 func title(s string) string {
