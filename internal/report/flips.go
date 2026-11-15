@@ -276,39 +276,80 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 	return in, nil
 }
 
-// FlipOptions are the player's risk settings.
+// Risk is how long the player is willing to tie gold up in stock.
+type Risk string
+
+const (
+	RiskLow    Risk = "low"    // quick turnover: busy markets, sold within hours
+	RiskMedium Risk = "medium" // within half a day
+	RiskHigh   Risk = "high"   // slower markets and bigger margins, up to a day and a half
+)
+
+// riskProfile is what a risk level means in numbers.
+type riskProfile struct {
+	MinSalesPerDay float64 // separate sales per day in the market that absorbs the resale
+	MaxClearDays   float64 // our units plus the competing supply near our price must sell within this
+	MaxShare       float64 // most of the gold one flip may use
+	MinROI         float64
+	AllowVolatile  bool
+}
+
+var riskProfiles = map[Risk]riskProfile{
+	RiskLow:    {MinSalesPerDay: 20, MaxClearDays: 0.25, MaxShare: 0.25, MinROI: 0.15},
+	RiskMedium: {MinSalesPerDay: 10, MaxClearDays: 0.5, MaxShare: 0.4, MinROI: 0.2},
+	RiskHigh:   {MinSalesPerDay: 4, MaxClearDays: 1.5, MaxShare: 0.6, MinROI: 0.3, AllowVolatile: true},
+}
+
+// ParseRisk accepts low, medium or high (default low).
+func ParseRisk(s string) Risk {
+	if _, ok := riskProfiles[Risk(s)]; ok {
+		return Risk(s)
+	}
+	return RiskLow
+}
+
+// competeBand: listings up to this much above our price compete with us for the same buyers,
+// since sellers undercut each other.
+const competeBand = 1.10
+
+// FlipOptions are the player's gold and risk settings. Zero fields come from the risk level.
 type FlipOptions struct {
-	Gold      int64   // copper the player has; default 40g
-	MaxShare  float64 // most of it one flip may use, default 0.5
-	MinROI    float64 // default 0.25
-	MaxDays   float64 // must sell within this many days at the floor rate, default 1
-	MinProfit int64   // default 0.5% of gold, between 10s and 1g
+	Gold      int64 // copper the player has; default 40g
+	Risk      Risk  // default low
+	MaxShare  float64
+	MinROI    float64
+	MaxClear  float64 // days
+	MinSales  float64 // separate sales per day
+	MinProfit int64   // default 0.25% of gold, between 10s and 50s
+	Volatile  bool    // allow items whose price swings
 	Limit     int
 	// Horde → Blackwater: the Alliance must buy it fast and pay more at home.
-	AllyMinSalesPerDay float64 // default 3
-	AllyEdge           float64 // your Blackwater price must be this much under Alliance's, default 0.05
-	AllyCapture        float64 // share of Alliance demand assumed to come to Blackwater, default 0.1
+	AllyEdge    float64 // your Blackwater price must be this much under Alliance's, default 0.05
+	AllyCapture float64 // share of Alliance demand assumed to come to Blackwater, default 0.1
 }
 
 func (o FlipOptions) withDefaults() FlipOptions {
 	if o.Gold <= 0 {
 		o.Gold = 40 * 10000
 	}
+	o.Risk = ParseRisk(string(o.Risk))
+	p := riskProfiles[o.Risk]
 	if o.MaxShare <= 0 {
-		o.MaxShare = 0.5
+		o.MaxShare = p.MaxShare
 	}
 	if o.MinROI <= 0 {
-		o.MinROI = 0.25
+		o.MinROI = p.MinROI
 	}
-	if o.MaxDays <= 0 {
-		o.MaxDays = 1
+	if o.MaxClear <= 0 {
+		o.MaxClear = p.MaxClearDays
 	}
+	if o.MinSales <= 0 {
+		o.MinSales = p.MinSalesPerDay
+	}
+	o.Volatile = o.Volatile || p.AllowVolatile
 	if o.MinProfit <= 0 {
-		// Scales gently: a sure 1g is worth showing whatever the budget.
-		o.MinProfit = min(10000, max(1000, o.Gold/200))
-	}
-	if o.AllyMinSalesPerDay <= 0 {
-		o.AllyMinSalesPerDay = 3
+		// Scales gently: a quick, sure 50s is worth showing whatever the budget.
+		o.MinProfit = min(5000, max(1000, o.Gold/400))
 	}
 	if o.AllyEdge <= 0 {
 		o.AllyEdge = 0.05
@@ -334,7 +375,9 @@ type Flip struct {
 	Profit        int64   `json:"expected_profit"` // after cut and deposit, if all sell at sell_at
 	ROI           float64 `json:"roi"`
 	ShareOfGold   float64 `json:"share_of_gold"`
-	DaysToSell    float64 `json:"days_to_sell"` // at the floor sales rate
+	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the floor sales rate"`
+	Competing     int64   `json:"competing_units" jsonschema:"units other sellers list within 10% of your price"`
+	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by days_to_sell (at least an hour): how fast this flip earns, the ranking key"`
 	SalesPerDay   float64 `json:"sales_per_day" jsonschema:"separate sales per day in the market that absorbs the resale"`
 	AlliancePrice int64   `json:"alliance_price,omitempty"`
 	Why           string  `json:"why"`
@@ -407,11 +450,43 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 			}
 		}
 	}
-	sort.Slice(flips, func(i, j int) bool { return flips[i].Profit > flips[j].Profit })
+	// Fast money first: gold earned per day the gold is tied up.
+	sort.Slice(flips, func(i, j int) bool {
+		if flips[i].ProfitPerDay != flips[j].ProfitPerDay {
+			return flips[i].ProfitPerDay > flips[j].ProfitPerDay
+		}
+		return flips[i].Profit > flips[j].Profit
+	})
 	if o.Limit > 0 && len(flips) > o.Limit {
 		flips = flips[:o.Limit]
 	}
 	return flips, funnel, o.Gold
+}
+
+// nearSupply counts units listed in book within competeBand of price, skipping the cheapest
+// skip units (our own purchases, when buying and relisting in the same house). A truncated
+// book whose next level is still in the band falls back to every listed unit.
+func nearSupply(s *FlipStat, price, skip int64) int64 {
+	limit := int64(float64(price) * competeBand)
+	if len(s.Book) == 0 {
+		// No book loaded (a price_only house): all we know is the cheapest price and the count.
+		if s.Min > 0 && s.Min <= limit {
+			return max(0, s.Listed-skip)
+		}
+		return 0
+	}
+	var n, total int64
+	for _, l := range s.Book {
+		total += l.Q
+		if l.P > limit {
+			return max(0, n-skip)
+		}
+		n += l.Q
+	}
+	if s.Beyond > 0 && s.Beyond <= limit && s.Listed > total {
+		n += s.Listed - total
+	}
+	return max(0, n-skip)
 }
 
 // planOne decides one item on one route. reason is "" (a flip), "slow", "gap" or "budget".
@@ -428,7 +503,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "slow"
 		}
 		a := it.Houses["alliance"]
-		if a == nil || a.Sales < 5 || a.SalesPerDay < o.AllyMinSalesPerDay || s.Volatile {
+		if a == nil || a.Sales < 5 || a.SalesPerDay < max(3, o.MinSales) || (s.Volatile && !o.Volatile) {
 			return Flip{}, "slow"
 		}
 		allyPrice = a.Min
@@ -443,17 +518,19 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		salesDay = a.SalesPerDay
 		why = fmt.Sprintf("Alliance pays %s at home and buys %.0f times a day; yours on Blackwater is cheaper", Gold(allyPrice), a.SalesPerDay)
 	default:
-		if s.Sales < 5 || s.SalesPerDay < 2 || s.Volatile || s.Fair == 0 {
+		if s.Sales < 5 || s.SalesPerDay < o.MinSales || (s.Volatile && !o.Volatile) || s.Fair == 0 {
 			return Flip{}, "slow"
 		}
 		ceiling = s.Fair // never bet on the price going above market value
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
 	}
-	capUnits := int64(rate * o.MaxDays)
-	if capUnits < 1 {
+	// Everything near our price must clear within MaxClear: our units and the competition.
+	clearCap := int64(rate * o.MaxClear)
+	if clearCap < 1 {
 		return Flip{}, "slow"
 	}
+	relist := kind == "relist"
 
 	// Resale price: the ceiling, or just under the cheapest competing listing. In the same house
 	// the competition is what's left after our own purchases, so iterate until stable.
@@ -461,11 +538,19 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	if kind != "relist" && s.Min > 0 && s.Min-1 < sellAt {
 		sellAt = s.Min - 1
 	}
-	var units, cost, upTo, left int64
+	var units, cost, upTo, left, capUnits int64
 	fill := func() {
 		net := float64(sellAt)*(1-sell.Cut) - float64(it.Deposit)
 		maxBuy := int64(net / (1 + o.MinROI))
 		units, cost, upTo, left = 0, 0, 0, 0
+		if relist {
+			// What we buy here leaves the band and comes back into it at our price, so the
+			// whole band must clear, whatever we take: checked once the price settles, since
+			// the band at the starting price (the ceiling) can be far wider than at the final one.
+			capUnits = clearCap
+		} else {
+			capUnits = clearCap - nearSupply(s, sellAt, 0)
+		}
 		for _, l := range b.Book {
 			if l.P > maxBuy || units >= capUnits {
 				break
@@ -508,6 +593,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		sellAt = want
 		fill() // the purchase must match the price it's resold at
 	}
+	if (units == 0 && capUnits <= 0) || (relist && units > 0 && nearSupply(s, sellAt, 0) > clearCap) {
+		return Flip{}, "slow" // too much competing supply near the resale price
+	}
 	if units == 0 {
 		// Is there a gap at all, ignoring the budget?
 		net := float64(sellAt)*(1-sell.Cut) - float64(it.Deposit)
@@ -532,9 +620,16 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			why = fmt.Sprintf("cheaper on %s than it sells for on %s; sells %.0f times a day there", title(buy.Faction), title(sell.Faction), salesDay)
 		}
 	}
+	skip := int64(0)
+	if relist {
+		skip = units
+	}
+	competing := nearSupply(s, sellAt, skip)
+	days := float64(units+competing) / rate
 	return Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
 		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Profit: profit, ROI: roi,
-		DaysToSell: float64(units) / rate, SalesPerDay: salesDay, AlliancePrice: allyPrice, Why: why}, ""
+		DaysToSell: days, Competing: competing, ProfitPerDay: int64(float64(profit) / math.Max(days, 1.0/24)),
+		SalesPerDay: salesDay, AlliancePrice: allyPrice, Why: why}, ""
 }
 
 func title(s string) string {

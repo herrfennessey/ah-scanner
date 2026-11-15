@@ -17,6 +17,7 @@ import (
 type flipsResult struct {
 	Flips      []report.Flip                 `json:"flips"`
 	Gold       int64                         `json:"gold"`
+	Risk       report.Risk                   `json:"risk" jsonschema:"low, medium or high: how long gold may sit in stock"`
 	ComputedAt int64                         `json:"computed_at"`
 	Confidence string                        `json:"confidence" jsonschema:"early (<3 days of history), fair (<10 days) or good"`
 	Funnel     map[string]*report.FlipFunnel `json:"funnel" jsonschema:"per route: how many items each rule rejected"`
@@ -53,12 +54,13 @@ func (s *Server) flipInputs(ctx context.Context) (*report.FlipInputs, error) {
 	return in, nil
 }
 
-func (s *Server) flips(ctx context.Context, gold int64, limit int) (*flipsResult, error) {
+func (s *Server) flips(ctx context.Context, gold int64, risk string, limit int) (*flipsResult, error) {
 	in, err := s.flipInputs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Limit: limit})
+	r := report.ParseRisk(risk)
+	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Risk: r, Limit: limit})
 	if f == nil {
 		f = []report.Flip{}
 	}
@@ -71,7 +73,7 @@ func (s *Server) flips(ctx context.Context, gold int64, limit int) (*flipsResult
 			}
 		}
 	}
-	return &flipsResult{Flips: f, Gold: gold, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
+	return &flipsResult{Flips: f, Gold: gold, Risk: r, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
 }
 
 func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +83,7 @@ func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
 		limit = 15
 	}
 	start := time.Now()
-	res, err := s.flips(r.Context(), int64(gold*10000), max(1, min(limit, 100)))
+	res, err := s.flips(r.Context(), int64(gold*10000), r.URL.Query().Get("risk"), max(1, min(limit, 100)))
 	if err != nil {
 		fail(w, 503, err)
 		return

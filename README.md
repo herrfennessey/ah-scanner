@@ -2,15 +2,25 @@
 
 A private price and sell-through history for the WoW Forever **EU PvP Horde and Blackwater**
 auction houses, built from Blizzard's API. The web UI opens on **Flips**: small, low-risk
-trades sized to the gold you have (a slider, default 40g):
+trades sized to the gold you have (a slider, default 40g) and your risk appetite (low by
+default):
 
 - **Relist:** listings dumped well under the next price in a house; buy them, relist just under.
 - **Cross:** cheaper on Blackwater than it reliably sells for on Horde.
 - **Alliance:** cheaper on Horde than Alliance players pay at home, for items the Alliance buys
   several times a day; sold to them on Blackwater.
 
-Each flip uses at most half your gold, buys only what sells within about a day at the floor
-sales rate, needs a 25%+ return after cut and deposit, and never resells above market value.
+Risk is how long your gold may sit in stock. Your units plus everything others list within 10%
+of your price must sell out at the floor sales rate within:
+
+| Risk | Sold out within | Sales a day | Gold per flip | Min return | Price-swinging items |
+|------|-----------------|-------------|---------------|------------|----------------------|
+| low (default) | ~6 h | 20+ | 25% | 15% | no |
+| medium | ~12 h | 10+ | 40% | 20% | no |
+| high | ~1.5 days | 4+ | 60% | 30% | yes |
+
+Flips are ranked by profit per day of holding, so fast movers come first; resale is never
+above market value.
 
 Plus **Browse** (every item, price history, when-to-post heatmap) and the same data as MCP
 tools for Claude at `/mcp`.
@@ -136,7 +146,7 @@ claude mcp add --transport http ahc http://<nuc>:4653/mcp \
   --header "Authorization: Bearer $AHC_MCP_TOKEN"
 ```
 
-Tools (all read-only): `flips` (with your gold), `sell_advice` (when to post an item),
+Tools (all read-only): `flips` (with your gold and risk), `sell_advice` (when to post an item),
 `search_items`, `item_summary`, `movers`, `collector_status`.
 
 ## How the numbers are worked out
