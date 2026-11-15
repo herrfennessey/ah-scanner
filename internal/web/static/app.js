@@ -587,7 +587,9 @@ function renderFlips() {
 
 // Live updates: the page polls a cheap version endpoint and reloads the flips after each scan,
 // marking flips that weren't there before and showing a toast (for a second monitor).
-const live = { gold: 0, risk: "", computed: 0, keys: null, newCount: 0, timer: 0, tick: 0 };
+// gold/risk are what the table shows; want is what the controls last asked for, which the
+// poll uses so a background refresh never reverts a change that is still loading.
+const live = { gold: 0, risk: "", want: null, computed: 0, keys: null, newCount: 0, timer: 0, tick: 0 };
 const flipKey = (f) => `${f.item_id}:${f.variant || ""}:${f.buy_house}>${f.sell_house}`;
 
 function startLive() {
@@ -595,7 +597,7 @@ function startLive() {
   live.timer = setInterval(async () => {
     try {
       const v = await api("/api/flips/version");
-      if (v.computed_at > live.computed && live.computed) loadFlips(live.gold, live.risk, true);
+      if (v.computed_at > live.computed && live.computed) loadFlips(live.want.gold, live.want.risk, true);
     } catch { /* collector briefly unreachable: try again next tick */ }
   }, 20000);
   live.tick = setInterval(updateAge, 30000);
@@ -633,6 +635,7 @@ function toast(html) {
 let flipsSeq = 0;
 async function loadFlips(gold, risk, fromScan = false) {
   const seq = ++flipsSeq;
+  if (!fromScan) live.want = { gold, risk };
   let r;
   try { r = await api(`/api/flips?gold=${gold}&risk=${risk}&limit=30`); }
   catch (err) {
