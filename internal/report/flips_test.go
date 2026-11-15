@@ -319,3 +319,17 @@ func TestUndercutBufferByRisk(t *testing.T) {
 		t.Fatalf("low: %+v", f)
 	}
 }
+
+func TestBufferPicksTheUnitsThatSurviveIt(t *testing.T) {
+	// Codex's case: one unit at 10s and seven at 1.3g on Blackwater, resale ~2g on Horde, 40s
+	// deposit per unit. Low risk must buy just the 10s unit (~60s after three lost deposits),
+	// not reject the item because the 1.3g units can't carry the buffer.
+	it := FlipItem{Item: 12, Name: "Codex Buffer", Deposit: 4000, Houses: map[string]*FlipStat{
+		"blackwater": {Fair: g(2), Min: 1000, Book: []FlipLevel{{1000, 1}, {g(1.3), 7}}},
+		"horde":      {Fair: g(2), Min: g(2), Sales: 200, SalesPerDay: 40, RobustPerDay: 400},
+	}}
+	f := plan([]FlipItem{it}, 40)
+	if len(f) != 1 || f[0].BuyUnits != 1 || f[0].Profit-2*f[0].DepositAtRisk < 1000 {
+		t.Fatalf("%+v", f)
+	}
+}

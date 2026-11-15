@@ -577,7 +577,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	var units, cost, upTo, left, capUnits int64
 	fill := func() {
 		net := float64(sellAt)*(1-sell.Cut) - dep
-		maxBuy := int64(net / (1 + o.MinROI))
+		// A unit is worth buying only if it keeps the minimum return and its margin also covers
+		// the extra relist deposits, so a few dear units can't sink the whole flip.
+		maxBuy := int64(min(net/(1+o.MinROI), net-float64(o.Relists)*dep))
 		units, cost, upTo, left = 0, 0, 0, 0
 		if relist {
 			// What we buy here leaves the band and comes back into it at our price, so the
@@ -638,10 +640,14 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	if units == 0 {
 		// Is there a gap at all, ignoring the budget?
 		net := float64(sellAt)*(1-sell.Cut) - dep
-		if float64(b.Book[0].P) <= net/(1+o.MinROI) {
-			return Flip{}, "budget"
+		p := float64(b.Book[0].P)
+		switch {
+		case p > net/(1+o.MinROI):
+			return Flip{}, "gap"
+		case p > net-float64(o.Relists)*dep:
+			return Flip{}, "deposit" // a margin, but not one that survives being undercut
 		}
-		return Flip{}, "gap"
+		return Flip{}, "budget"
 	}
 	net := float64(sellAt)*(1-sell.Cut) - dep
 	profit := int64(math.Round(net*float64(units))) - cost
