@@ -205,3 +205,16 @@ func TestRankedByProfitPerDay(t *testing.T) {
 		t.Fatalf("the quick small flip should rank first: %+v", f)
 	}
 }
+
+func TestRelistPriceFoundBeforeSupplyCheck(t *testing.T) {
+	// Codex's case: 8g, low risk, 40 sales a day, market value 9g; one unit at 2g, one at 4g and
+	// 100 at 9g. Buy the 2g unit and relist just under 4g: only the 4g unit competes.
+	it := FlipItem{Item: 10, Name: "Codex Case", Houses: map[string]*FlipStat{
+		"horde": {Fair: g(9), Min: g(2), Sales: 100, SalesPerDay: 40, RobustPerDay: 40,
+			Book: []FlipLevel{{g(2), 1}, {g(4), 1}, {g(9), 100}}},
+	}}
+	f := plan([]FlipItem{it}, 8)
+	if len(f) != 1 || f[0].BuyUnits != 1 || f[0].SellAt != g(4)-1 || f[0].Competing != 1 {
+		t.Fatalf("%+v", f)
+	}
+}
