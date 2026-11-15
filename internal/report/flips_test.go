@@ -274,3 +274,48 @@ func TestFallingMarketOnlyAtHighRisk(t *testing.T) {
 		t.Fatalf("steady: %+v", f)
 	}
 }
+
+func TestHighDepositBlackwaterSkipped(t *testing.T) {
+	// The Vibrant Plume case: 8s on Horde, ~17s on Blackwater and ~18.7s Alliance, but it vendors
+	// for 8s25c, so a Blackwater listing costs ~8s25c of deposit per unit (5× the faction
+	// house's 1s65c). Undercut once and the deposit wipes out the margin.
+	bwDep := FlipHouse{ID: 116, Faction: "blackwater", Cut: 0.15, Tracked: true, DepositMult: 5}
+	it := FlipItem{Item: 5117, Name: "Vibrant Plume", Deposit: 165, Houses: map[string]*FlipStat{
+		"horde":      {Fair: 877, Min: 804, Sales: 400, SalesPerDay: 180, RobustPerDay: 1500, Book: []FlipLevel{{804, 200}}},
+		"blackwater": {Fair: 1700, Min: 1700, Sales: 100, SalesPerDay: 60, RobustPerDay: 400},
+		"alliance":   {Fair: 1874, Min: 1874, Sales: 59, SalesPerDay: 60, RobustPerDay: 400},
+	}}
+	in := &FlipInputs{Houses: []FlipHouse{horde, bwDep, ally}, Items: []FlipItem{it}}
+	for _, r := range []Risk{RiskLow, RiskMedium, RiskHigh} {
+		f, _, _ := PlanFlips(in, FlipOptions{Gold: g(40), Risk: r})
+		for _, x := range f {
+			if x.SellHouse == "blackwater" {
+				t.Fatalf("%s: %+v", r, x)
+			}
+		}
+	}
+	// The same flip with a faction-house deposit would pass: the deposit is what stops it.
+	bwDep.DepositMult = 1
+	in.Houses[1] = bwDep
+	if f, _, _ := PlanFlips(in, FlipOptions{Gold: g(40), Risk: RiskHigh}); len(f) == 0 {
+		t.Fatal("with a 1x deposit the flip should exist; the test isn't testing the deposit")
+	}
+}
+
+func TestUndercutBufferByRisk(t *testing.T) {
+	// 4 units bought at 1g, sold at ~2g with a 40s deposit each: 2g profit after one lost
+	// deposit, 1.6g of deposit per relist round. Low risk (2 more rounds) says no; medium (1)
+	// and high (none) say yes.
+	it := FlipItem{Item: 11, Name: "Deposit Heavy", Deposit: 4000, Houses: map[string]*FlipStat{
+		"blackwater": {Fair: g(2), Min: g(1), Book: []FlipLevel{{g(1), 4}}},
+		"horde":      {Fair: g(2), Min: g(2), Sales: 200, SalesPerDay: 40, RobustPerDay: 400},
+	}}
+	for _, r := range []Risk{RiskMedium, RiskHigh} {
+		if f := planRisk([]FlipItem{it}, 40, r); len(f) != 1 || f[0].DepositAtRisk != 16000 {
+			t.Fatalf("%s: %+v", r, f)
+		}
+	}
+	if f := planRisk([]FlipItem{it}, 40, RiskLow); len(f) != 0 {
+		t.Fatalf("low: %+v", f)
+	}
+}

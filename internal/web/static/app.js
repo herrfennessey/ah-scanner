@@ -511,8 +511,8 @@ const toGold = (pos) => Math.round(GOLD_MIN * Math.pow(GOLD_MAX / GOLD_MIN, pos 
 const toPos = (gold) => Math.round(1000 * Math.log(gold / GOLD_MIN) / Math.log(GOLD_MAX / GOLD_MIN));
 // Mirrors riskProfiles in internal/report/flips.go.
 const RISK = {
-  low: { label: "Low", hours: 6, share: 0.25, roi: 0.15, sales: 20, note: "Busy markets only. Everything near your price sells within about 6 hours." },
-  medium: { label: "Medium", hours: 12, share: 0.4, roi: 0.2, sales: 10, note: "Sells within about 12 hours." },
+  low: { label: "Low", hours: 6, share: 0.25, roi: 0.15, sales: 20, note: "Busy markets only. Sells within about 6 hours, and survives being undercut twice." },
+  medium: { label: "Medium", hours: 12, share: 0.4, roi: 0.2, sales: 10, note: "Sells within about 12 hours, and survives one undercut." },
   high: { label: "High", hours: 36, share: 0.6, roi: 0.3, sales: 4, note: "Slower markets and bigger margins. Gold can sit for a day and a half." },
 };
 
@@ -547,6 +547,7 @@ function renderFlips() {
         <ul class="reasons">
           <li>Risk sets how long your gold may sit in stock. Your units <i>plus</i> everything other sellers list within 10% of your price must sell within about 6 hours (low), 12 hours (medium) or a day and a half (high), at the floor sales rate (certain sales only, largest single sale ignored). Busy markets are required too: 20, 10 or 4+ separate sales a day.</li>
           <li>One flip uses at most 25%, 40% or 60% of your gold, and needs at least a 15%, 20% or 30% return after the AH cut (5% Horde, 15% Blackwater) and an estimated deposit. Below high risk, items whose price swings are left out, and so are sliding markets: a resale more than 15% under market value (for Alliance flips, the Alliance's market value) means the price is falling and could fall further before your stock sells.</li>
+          <li>Profit counts the AH cut and one lost deposit (you get the deposit back when it sells; one is counted for a cancel-and-relist after an undercut). Blackwater's deposit is 5× a faction house's. At low risk the profit must also survive two more undercut-and-relist rounds, at medium one.</li>
           <li>Flips are ranked by profit per day of holding, so quick turnover comes first.</li>
           <li>Resale is never above the item's market value, and is just under the cheapest competing listing. On Blackwater it's also under what buyers pay at home (the dearer of the Horde and Alliance prices), since everyone shopping there has a faction auction house too.</li>
           <li><b>Relist:</b> buy listings dumped well below the next price in a house, then relist just under that next price. It never buys out a market.</li>
@@ -609,7 +610,7 @@ async function loadFlips(gold, risk) {
       <td><span class="kind kind-${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || esc(f.kind)}</span>
         <a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a><span class="sub-num why">${esc(f.why)}</span></td>
       <td data-label="Buy">${count(f.buy_units)} on ${factionName(f.buy_house)}<span class="sub-num">up to ${plain(f.buy_up_to_price)} each</span></td>
-      <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold</span></td>
+      <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold${f.deposit_at_risk ? ` · ${plain(f.deposit_at_risk)} deposit` : ""}</span></td>
       <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}</span></td>
       <td data-label="Profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.roi)} return · ${plain(f.profit_per_day)} a day</span></td>
       <td data-label="Sold out in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}<span class="sub-num">${f.competing_units ? `${count(f.competing_units)} others listed near your price` : "no one else near your price"} · ${Math.round(f.sales_per_day)} sales a day</span></td></tr>`).join("")}</tbody>
@@ -620,9 +621,9 @@ function funnelTable(funnel) {
   const routes = Object.entries(funnel || {}).filter(([, f]) => f.candidates > 0).sort();
   if (!routes.length) return "";
   return `<div class="scroll-x"><table class="mini funnel">
-    <thead><tr><th>Route</th><th>Items checked</th><th>Sells too slowly</th><th>Price falling</th><th>No price gap</th><th>Needs more gold</th><th>Not listed to buy</th></tr></thead>
+    <thead><tr><th>Route</th><th>Items checked</th><th>Sells too slowly</th><th>Price falling</th><th>Deposit too high</th><th>No price gap</th><th>Needs more gold</th><th>Not listed to buy</th></tr></thead>
     <tbody>${routes.map(([route, f]) => `<tr><td>${esc(route.replace(/(^|→ )(\w)/g, (m) => m.toUpperCase()))}</td><td>${count(f.candidates)}</td>
-      <td>${count(f.sells_too_slowly)}</td><td>${count(f.price_falling || 0)}</td><td>${count(f.no_profitable_gap)}</td><td>${count(f.needs_more_gold)}</td><td>${count(f.not_listed_to_buy)}</td></tr>`).join("")}</tbody>
+      <td>${count(f.sells_too_slowly)}</td><td>${count(f.price_falling || 0)}</td><td>${count(f.deposit_too_high || 0)}</td><td>${count(f.no_profitable_gap)}</td><td>${count(f.needs_more_gold)}</td><td>${count(f.not_listed_to_buy)}</td></tr>`).join("")}</tbody>
   </table></div>`;
 }
 

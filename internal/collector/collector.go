@@ -30,6 +30,7 @@ type House struct {
 	PriceOnly bool
 	ViewOnly  bool
 	Cut       float64 // AH cut on sales
+	Deposit   float64 // deposit multiplier over the faction-house deposit
 }
 
 type Collector struct {
@@ -64,7 +65,7 @@ func ResolveHouses(index []blizzard.HouseRef, want []config.House) ([]House, err
 		}
 		switch {
 		case len(cands) == 1:
-			out = append(out, House{ID: cands[0].ID, Name: cands[0].Name, Faction: w.Faction, PriceOnly: w.PriceOnly, ViewOnly: !w.Tradeable(), Cut: w.AHCut()})
+			out = append(out, House{ID: cands[0].ID, Name: cands[0].Name, Faction: w.Faction, PriceOnly: w.PriceOnly, ViewOnly: !w.Tradeable(), Cut: w.AHCut(), Deposit: w.DepositMult()})
 		case len(cands) == 0 && w.ID != 0:
 			return nil, fmt.Errorf("house id %d (%s) not in the index, or its faction changed", w.ID, w.Faction)
 		case len(cands) == 0:
