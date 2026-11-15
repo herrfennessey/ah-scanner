@@ -297,12 +297,15 @@ type riskProfile struct {
 	// Relists: extra cancel-and-relist rounds (each losing a deposit) the profit must survive
 	// beyond the one already counted, so being undercut doesn't turn the flip into a loss.
 	Relists int
+	// SellBlackwater allows routes that resell on Blackwater: 15% cut, 5x deposit, a sixth of
+	// Horde's buyers and faster undercuts, so only from medium risk.
+	SellBlackwater bool
 }
 
 var riskProfiles = map[Risk]riskProfile{
 	RiskLow:    {MinSalesPerDay: 20, MaxClearDays: 0.25, MaxShare: 0.25, MinROI: 0.15, Relists: 2},
-	RiskMedium: {MinSalesPerDay: 10, MaxClearDays: 0.5, MaxShare: 0.4, MinROI: 0.2, Relists: 1},
-	RiskHigh:   {MinSalesPerDay: 4, MaxClearDays: 1.5, MaxShare: 0.6, MinROI: 0.3, AllowVolatile: true},
+	RiskMedium: {MinSalesPerDay: 10, MaxClearDays: 0.5, MaxShare: 0.4, MinROI: 0.2, Relists: 1, SellBlackwater: true},
+	RiskHigh:   {MinSalesPerDay: 4, MaxClearDays: 1.5, MaxShare: 0.6, MinROI: 0.3, AllowVolatile: true, SellBlackwater: true},
 }
 
 // ParseRisk accepts low, medium or high (default low).
@@ -328,7 +331,9 @@ type FlipOptions struct {
 	MinProfit int64   // default 0.25% of gold, between 10s and 50s
 	Volatile  bool    // allow items whose price swings
 	Relists   int     // extra lost deposits the profit must survive (from the risk level)
-	Limit     int
+	// SellBlackwater allows reselling on Blackwater (from the risk level).
+	SellBlackwater bool
+	Limit          int
 	// Horde → Blackwater: the Alliance must buy it fast and pay more at home.
 	AllyEdge    float64 // your Blackwater price must be this much under Alliance's, default 0.05
 	AllyCapture float64 // share of Alliance demand assumed to come to Blackwater, default 0.1
@@ -354,6 +359,7 @@ func (o FlipOptions) withDefaults() FlipOptions {
 	}
 	o.Volatile = o.Volatile || p.AllowVolatile
 	o.Relists = max(o.Relists, p.Relists)
+	o.SellBlackwater = o.SellBlackwater || p.SellBlackwater
 	if o.MinProfit <= 0 {
 		// Scales gently: a quick, sure 50s is worth showing whatever the budget.
 		o.MinProfit = min(5000, max(1000, o.Gold/400))
@@ -381,13 +387,18 @@ type Flip struct {
 	SellAt    int64  `json:"sell_at"`
 	// Profit is after the cut and one lost deposit, if all sell at sell_at. A deposit comes back
 	// when the item sells; counting one lost anyway covers one cancel-and-relist after an undercut.
-	Profit        int64   `json:"expected_profit"`
+	Profit int64 `json:"profit_if_sold" jsonschema:"profit if every unit sells at sell_at, after the cut and one lost deposit"`
+	// Expected is the probability-weighted profit: each listing round sells with SellChance; a
+	// round that doesn't costs the deposit and a typical undercut before relisting.
+	Expected      int64   `json:"expected_profit" jsonschema:"profit weighted by the measured chance of selling before being undercut, counting lost deposits and price cuts on relists: the ranking basis"`
+	SellChance    float64 `json:"sell_chance" jsonschema:"measured share of comparable listings (cheapest when posted, same sell-out time, same house) that sold within 12 hours"`
+	GoneSoon      float64 `json:"gone_soon" jsonschema:"measured share of listings this far under market value that are gone within an hour of being seen: how fast to act"`
 	DepositAtRisk int64   `json:"deposit_at_risk" jsonschema:"deposit paid to list your units, lost if they expire or you cancel to undercut (Blackwater's deposit is 5x a faction house's)"`
 	ROI           float64 `json:"roi"`
 	ShareOfGold   float64 `json:"share_of_gold"`
 	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the floor sales rate"`
 	Competing     int64   `json:"competing_units" jsonschema:"units other sellers list within 10% of your price"`
-	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by days_to_sell (at least an hour): how fast this flip earns, the ranking key"`
+	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): how fast this flip earns, the ranking key"`
 	SalesPerDay   float64 `json:"sales_per_day" jsonschema:"separate sales per day in the market that absorbs the resale"`
 	AlliancePrice int64   `json:"alliance_price,omitempty"`
 	Why           string  `json:"why"`
@@ -423,7 +434,7 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 			continue
 		}
 		for _, sell := range in.Houses {
-			if sell.ViewOnly {
+			if sell.ViewOnly || (sell.Faction == "blackwater" && !o.SellBlackwater) {
 				continue
 			}
 			kind := "cross"
@@ -471,7 +482,7 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 		if flips[i].ProfitPerDay != flips[j].ProfitPerDay {
 			return flips[i].ProfitPerDay > flips[j].ProfitPerDay
 		}
-		return flips[i].Profit > flips[j].Profit
+		return flips[i].Expected > flips[j].Expected
 	})
 	if o.Limit > 0 && len(flips) > o.Limit {
 		flips = flips[:o.Limit]
@@ -649,8 +660,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		}
 		return Flip{}, "budget"
 	}
-	net := float64(sellAt)*(1-sell.Cut) - dep
-	profit := int64(math.Round(net*float64(units))) - cost
+	// Sold in one auction: the deposit has a 1s minimum per auction (seen in Journalator logs).
+	depositAtRisk := max(minDeposit, int64(math.Round(dep*float64(units))))
+	gross := int64(math.Round(float64(sellAt) * (1 - sell.Cut) * float64(units)))
+	profit := gross - cost - depositAtRisk
 	roi := float64(profit) / float64(cost)
 	if roi < o.MinROI {
 		return Flip{}, "gap"
@@ -658,7 +671,6 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	if profit < o.MinProfit {
 		return Flip{}, "budget"
 	}
-	depositAtRisk := int64(math.Round(dep * float64(units)))
 	if profit-int64(o.Relists)*depositAtRisk < o.MinProfit {
 		// Undercut o.Relists more times, the deposits would eat the profit.
 		return Flip{}, "deposit"
@@ -676,11 +688,18 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	competing := nearSupply(s, sellAt, skip)
 	days := float64(units+competing) / rate
+	chance := sellChance(sell.Faction, days)
+	expected, rounds := expectedProfit(gross, cost, depositAtRisk, chance)
+	if expected < o.MinProfit {
+		return Flip{}, "deposit" // likely relists eat it: deposits and undercuts
+	}
 	return Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
 		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Profit: profit, ROI: roi,
+		Expected: expected, SellChance: chance, GoneSoon: goneSoon(buy.Faction, b),
 		DepositAtRisk: depositAtRisk,
-		DaysToSell:    days, Competing: competing, ProfitPerDay: int64(float64(profit) / math.Max(days, 1.0/24)),
-		SalesPerDay: salesDay, AlliancePrice: allyPrice, Why: why}, ""
+		DaysToSell:    days, Competing: competing,
+		ProfitPerDay: int64(float64(expected) / math.Max(days*rounds, 1.0/24)),
+		SalesPerDay:  salesDay, AlliancePrice: allyPrice, Why: why}, ""
 }
 
 // blackwaterHomeCap is the most a Blackwater buyer would pay: the higher of the Horde and

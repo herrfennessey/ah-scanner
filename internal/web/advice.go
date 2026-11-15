@@ -76,6 +76,16 @@ func (s *Server) flips(ctx context.Context, gold int64, risk string, limit int) 
 	return &flipsResult{Flips: f, Gold: gold, Risk: r, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
 }
 
+// apiFlipsVersion is a cheap poll for the page: the time the flip inputs were last rebuilt.
+func (s *Server) apiFlipsVersion(w http.ResponseWriter, r *http.Request) {
+	t, err := s.Store.FlipCacheTime(r.Context())
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]int64{"computed_at": t})
+}
+
 func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
 	gold, _ := strconv.ParseFloat(r.URL.Query().Get("gold"), 64)
 	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
