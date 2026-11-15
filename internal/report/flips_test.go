@@ -55,10 +55,10 @@ func TestRelistNeverBuysOutTheMarket(t *testing.T) {
 }
 
 func TestRelistBandJudgedAtTheResalePrice(t *testing.T) {
-	// Dumped at 2g, next at 5g, a wall at 9g (market value). Resale is just under 5g, where only
-	// 12 units compete; the 500 at 9g are beyond the band and must not block the flip.
+	// Dumped at 2g, next at 5g (about market value), a wall at 9g. Resale is just under 5g, where
+	// only 12 units compete; the 500 at 9g are beyond the band and must not block the flip.
 	it := FlipItem{Item: 10, Name: "Wall", Houses: map[string]*FlipStat{
-		"horde": {Fair: g(9), Min: g(2), Sales: 400, SalesPerDay: 60, RobustPerDay: 60,
+		"horde": {Fair: g(5.5), Min: g(2), Sales: 400, SalesPerDay: 60, RobustPerDay: 60,
 			Book: []FlipLevel{{g(2), 2}, {g(5), 10}, {g(9), 500}}},
 	}}
 	if f := plan([]FlipItem{it}, 40); len(f) != 1 || f[0].SellAt != g(5)-1 || f[0].Competing != 10 {
@@ -183,7 +183,7 @@ func TestCompetitionShrinksTheBuy(t *testing.T) {
 	// low-risk flip may only add 30.
 	it := FlipItem{Item: 7, Name: "Heavy Leather", Houses: map[string]*FlipStat{
 		"blackwater": {Fair: 300, Min: 100, Book: []FlipLevel{{100, 500}}},
-		"horde":      {Fair: 300, Min: 250, Sales: 500, SalesPerDay: 80, RobustPerDay: 400, Book: []FlipLevel{{250, 70}, {400, 900}}},
+		"horde":      {Fair: 260, Min: 250, Sales: 500, SalesPerDay: 80, RobustPerDay: 400, Book: []FlipLevel{{250, 70}, {400, 900}}},
 	}}
 	f := plan([]FlipItem{it}, 40)
 	if len(f) != 1 || f[0].BuyUnits != 30 || f[0].Competing != 70 || f[0].DaysToSell != 0.25 {
@@ -207,10 +207,11 @@ func TestRankedByProfitPerDay(t *testing.T) {
 }
 
 func TestRelistPriceFoundBeforeSupplyCheck(t *testing.T) {
-	// Codex's case: 8g, low risk, 40 sales a day, market value 9g; one unit at 2g, one at 4g and
-	// 100 at 9g. Buy the 2g unit and relist just under 4g: only the 4g unit competes.
+	// Codex's case: 8g, low risk, 40 sales a day; one unit at 2g, one at 4g and 100 at 9g (market
+	// value 4.2g, so 4g isn't a slide). Buy the 2g unit and relist just under 4g: only the 4g
+	// unit competes.
 	it := FlipItem{Item: 10, Name: "Codex Case", Houses: map[string]*FlipStat{
-		"horde": {Fair: g(9), Min: g(2), Sales: 100, SalesPerDay: 40, RobustPerDay: 40,
+		"horde": {Fair: g(4.2), Min: g(2), Sales: 100, SalesPerDay: 40, RobustPerDay: 40,
 			Book: []FlipLevel{{g(2), 1}, {g(4), 1}, {g(9), 100}}},
 	}}
 	f := plan([]FlipItem{it}, 8)
@@ -239,5 +240,37 @@ func TestBlackwaterCappedByHomePrices(t *testing.T) {
 	it.Houses["alliance"].Min = 0
 	if c := blackwaterHomeCap(it, true); c != 0 {
 		t.Fatalf("cap %d", c)
+	}
+}
+
+func TestFallingMarketOnlyAtHighRisk(t *testing.T) {
+	// The Giant Egg case: Horde slid from 17s to 8s and Alliance from 25s to 20s (market value
+	// 24.11s). Reselling on Blackwater at 19s, just under a falling Alliance price, is riding a
+	// slide: not a low or medium risk flip.
+	it := FlipItem{Item: 12207, Name: "Giant Egg", Houses: map[string]*FlipStat{
+		"horde":      {Fair: 1398, Min: 795, Sales: 145, SalesPerDay: 60, RobustPerDay: 1000, Book: []FlipLevel{{795, 56}, {895, 149}}},
+		"blackwater": {Fair: 2499, Min: 2395, Sales: 88, SalesPerDay: 60, RobustPerDay: 190, Book: []FlipLevel{{2395, 82}}},
+		"alliance":   {Fair: 2411, Min: 2000, Sales: 21, SalesPerDay: 20, RobustPerDay: 100},
+	}}
+	for _, r := range []Risk{RiskLow, RiskMedium} {
+		if f := planRisk([]FlipItem{it}, 40, r); len(f) != 0 {
+			t.Fatalf("%s: %+v", r, f)
+		}
+	}
+	hasAlliance := func(f []Flip) bool {
+		for _, x := range f {
+			if x.Kind == "alliance" {
+				return true
+			}
+		}
+		return false
+	}
+	if f := planRisk([]FlipItem{it}, 40, RiskHigh); !hasAlliance(f) {
+		t.Fatalf("high risk accepts the slide: %+v", f)
+	}
+	// Steady Alliance price (market value 21s): the same flip is fine at low risk.
+	it.Houses["alliance"].Fair = 2100
+	if f := plan([]FlipItem{it}, 40); !hasAlliance(f) {
+		t.Fatalf("steady: %+v", f)
 	}
 }
