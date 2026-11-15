@@ -13,19 +13,28 @@ default):
 Risk is how long your gold may sit in stock. Your units plus everything others list within 10%
 of your price must sell out at the floor sales rate within:
 
-| Risk | Sold out within | Sales a day | Gold per flip | Min return | Swinging or sliding prices | Undercuts survived |
-|------|-----------------|-------------|---------------|------------|----------------------------|--------------------|
-| low (default) | ~6 h | 20+ | 25% | 15% | no | 2 |
-| medium | ~12 h | 10+ | 40% | 20% | no | 1 |
-| high | ~1.5 days | 4+ | 60% | 30% | yes | 0 |
+| Risk | Sold out within | Sales a day | Gold per flip | Min return | Swinging or sliding prices | Undercuts survived | Sells on |
+|------|-----------------|-------------|---------------|------------|----------------------------|--------------------|----------|
+| low (default) | ~6 h | 20+ | 25% | 15% | no | 2 | Horde only |
+| medium | ~12 h | 10+ | 40% | 20% | no | 1 | Horde, Blackwater |
+| high | ~1.5 days | 4+ | 60% | 30% | yes | 0 | Horde, Blackwater |
 
-Profit counts the AH cut (5% faction, 15% Blackwater) and one lost deposit; "undercuts survived"
-is how many more cancel-and-relist rounds, each losing the deposit again, the profit must
-cover. Blackwater's deposit is 5× a faction house's (`deposit_factor` per house in config).
+**Expected profit** ranks the flips. Each listing round sells with the measured chance for
+listings like it: cheapest when posted, same house, same sell-out time, from a backtest of the
+history (`internal/report/odds.go`). A round that doesn't sell loses the deposit and relists
+one typical undercut (about 3%) lower. Deposits are 20% of the vendor price with a 1s minimum
+per auction (confirmed against Journalator posting logs), 5× on Blackwater (`deposit_factor`);
+the cut is 5% on faction houses and 15% on Blackwater. "Undercuts survived" is how many
+cancel-and-relist rounds the profit must also cover. Low risk only sells on Horde: Blackwater
+has the bigger cut and deposit, a sixth of the buyers and faster undercuts.
+
+The Flips page updates itself after every scan: new flips get a badge, a toast appears and the
+tab title shows the count. **Going fast** marks the listings most likely to be gone within the
+hour; about half of all underpriced listings are.
 
 Below high risk, sliding markets are skipped too: a resale more than 15% under market value
-(the Alliance's, for Alliance flips) means the price is falling. Flips are ranked by profit per
-day of holding, so fast movers come first; resale is never
+(the Alliance's, for Alliance flips) means the price is falling. Flips are ranked by expected
+profit per day of holding, so fast, likely sales come first; resale is never
 above market value, nor on Blackwater above the dearer of the Horde and Alliance prices
 (every Blackwater buyer can buy at home instead).
 

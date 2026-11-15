@@ -96,17 +96,21 @@ func TestAllianceRouteNeedsFastAllianceSales(t *testing.T) {
 			"alliance":   {Fair: allyPrice, Min: allyPrice, Sales: 60, SalesPerDay: allySalesPerDay, RobustPerDay: 80},
 		}}
 	}
-	// Alliance pays 31s and buys 20 times a day: sell on Blackwater just under 29.45s.
-	f := plan([]FlipItem{mk(20, 3100)}, 40)
+	// Alliance pays 31s and buys 20 times a day: sell on Blackwater just under 29.45s. Selling on
+	// Blackwater starts at medium risk.
+	if f := plan([]FlipItem{mk(20, 3100)}, 40); len(f) != 0 {
+		t.Fatalf("low risk sells on Horde only: %+v", f)
+	}
+	f := planRisk([]FlipItem{mk(20, 3100)}, 40, RiskMedium)
 	if len(f) != 1 || f[0].Kind != "alliance" || f[0].SellAt != 2945 {
 		t.Fatalf("fast Alliance demand should pass: %+v", f)
 	}
 	// Same prices, but Alliance barely buys it: no flip, whatever Blackwater's price.
-	if f := plan([]FlipItem{mk(1, 3100)}, 40); len(f) != 0 {
+	if f := planRisk([]FlipItem{mk(1, 3100)}, 40, RiskMedium); len(f) != 0 {
 		t.Fatalf("slow Alliance demand should block: %+v", f)
 	}
 	// Alliance cheaper at home than our buy price allows: no flip.
-	if f := plan([]FlipItem{mk(20, 1600)}, 40); len(f) != 0 {
+	if f := planRisk([]FlipItem{mk(20, 1600)}, 40, RiskMedium); len(f) != 0 {
 		t.Fatalf("cheap Alliance should block: %+v", f)
 	}
 }
@@ -268,9 +272,9 @@ func TestFallingMarketOnlyAtHighRisk(t *testing.T) {
 	if f := planRisk([]FlipItem{it}, 40, RiskHigh); !hasAlliance(f) {
 		t.Fatalf("high risk accepts the slide: %+v", f)
 	}
-	// Steady Alliance price (market value 21s): the same flip is fine at low risk.
+	// Steady Alliance price (market value 21s): the same flip is fine at medium risk.
 	it.Houses["alliance"].Fair = 2100
-	if f := plan([]FlipItem{it}, 40); !hasAlliance(f) {
+	if f := planRisk([]FlipItem{it}, 40, RiskMedium); !hasAlliance(f) {
 		t.Fatalf("steady: %+v", f)
 	}
 }
@@ -330,6 +334,49 @@ func TestBufferPicksTheUnitsThatSurviveIt(t *testing.T) {
 	}}
 	f := plan([]FlipItem{it}, 40)
 	if len(f) != 1 || f[0].BuyUnits != 1 || f[0].Profit-2*f[0].DepositAtRisk < 1000 {
+		t.Fatalf("%+v", f)
+	}
+}
+
+func TestExpectedProfitWeighsRelists(t *testing.T) {
+	// Sure to sell: expected equals gross - cost.
+	if ev, r := expectedProfit(10000, 6000, 500, 1); ev != 4000 || r != 1 {
+		t.Fatalf("sure: %d %v", ev, r)
+	}
+	// Half the time a round fails: some deposits and undercuts are expected, more rounds too.
+	ev, r := expectedProfit(10000, 6000, 500, 0.5)
+	if ev >= 4000 || ev < 3000 || r <= 1.5 {
+		t.Fatalf("coin flip: %d %v", ev, r)
+	}
+	// A slow seller with a big deposit is worth less than the same flip that sells fast.
+	slow, _ := expectedProfit(10000, 6000, 2000, 0.1)
+	fast, _ := expectedProfit(10000, 6000, 2000, 0.5)
+	if slow >= fast {
+		t.Fatalf("slow %d fast %d", slow, fast)
+	}
+}
+
+func TestOddsLookups(t *testing.T) {
+	if sellChance("horde", 0.1) != 0.51 || sellChance("horde", 2) != 0.16 || sellChance("blackwater", 10) != 0.09 {
+		t.Fatal("sell chance table")
+	}
+	one := &FlipStat{Fair: 1000, Book: []FlipLevel{{400, 1}}}
+	if goneSoon("horde", one) != 0.51 {
+		t.Fatal("single unit at 40% of market on Horde")
+	}
+	if goneSoon("horde", &FlipStat{Fair: 1000, Book: []FlipLevel{{950, 1}}}) != 0 {
+		t.Fatal("near market isn't in the measurements")
+	}
+}
+
+func TestMinimumDepositPerAuction(t *testing.T) {
+	// A tiny deposit (0.2c a unit) still costs 1s per auction.
+	it := FlipItem{Item: 13, Name: "Cheap Fish", Deposit: 0, Houses: map[string]*FlipStat{
+		"blackwater": {Fair: 100, Min: 20, Book: []FlipLevel{{20, 100}}},
+		"horde":      {Fair: 100, Min: 100, Sales: 900, SalesPerDay: 300, RobustPerDay: 2000},
+	}}
+	f := plan([]FlipItem{it}, 40)
+	if len(f) != 1 || f[0].DepositAtRisk != 100 {
 		t.Fatalf("%+v", f)
 	}
 }
