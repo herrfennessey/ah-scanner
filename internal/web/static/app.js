@@ -499,196 +499,98 @@ async function renderStatus() {
       </section>`).join("")}</div>`;
 }
 
-/* advisor: what should I do right now? */
-const VERDICT_TONE = {
-  "GOOD BUY": "good", "GOOD TO SELL": "good", "SELL NOW": "good", "CANCEL AND RELIST": "good",
-  "FAIR": "wait", "SELL IN PARTS": "wait", "HOLD": "wait", "LET IT RIDE": "wait", "ALREADY CHEAPEST": "wait",
-  "EXPENSIVE": "bad", "TOO HIGH": "bad",
+/* flips: small, low-risk trades for the gold you have */
+const KIND = {
+  relist: ["Relist", "Buy listings dumped under the next price and relist just under it, in the same house."],
+  cross: ["Cross", "Buy on one house, sell on the other."],
+  alliance: ["Alliance", "Buy on Horde, sell on Blackwater for less than Alliance players pay at home."],
 };
-const verdictChip = (v) => `<span class="verdict-chip ${VERDICT_TONE[v] || "neutral"}">${esc(v.toLowerCase())}</span>`;
-const confNote = (c) => c === "good" ? "" : `<p class="fine">${c === "early" ? "Early estimate: under 3 days of history." : "Fair estimate: under 10 days of history."}</p>`;
-const remember = (k, v) => store.set(`adv:${k}`, v);
-const recall = (k, d = "") => store.get(`adv:${k}`, d);
+// Slider positions map to gold on a log scale: 5g … 2000g.
+const GOLD_MIN = 5, GOLD_MAX = 2000;
+const toGold = (pos) => Math.round(GOLD_MIN * Math.pow(GOLD_MAX / GOLD_MIN, pos / 1000));
+const toPos = (gold) => Math.round(1000 * Math.log(gold / GOLD_MIN) / Math.log(GOLD_MAX / GOLD_MIN));
 
-function itemField(id, label) {
-  return `<label class="fld grow"><span>${label}</span>
-    <span class="ac"><input id="${id}" autocomplete="off" placeholder="Item name" value="${esc(recall(id))}" required>
-    <ul class="ac-list" hidden></ul></span></label>`;
-}
-
-function renderAdvisor() {
-  const h = currentHouse();
-  const house = factionName(state.house);
+function renderFlips() {
+  const gold = Math.min(GOLD_MAX, Math.max(GOLD_MIN, store.get("gold", 40)));
   $("#view").innerHTML = `
-    <div class="advisor">
-      <section class="panel adv" id="adv-price">
-        <h2 class="panel-title">Is this a good price? <span class="aside">${house}</span></h2>
-        <form class="adv-form">
-          ${itemField("pc-item", "Item")}
-          <label class="fld"><span>Price per unit</span><input id="pc-price" placeholder="12g30s" value="${esc(recall("pc-price"))}" required></label>
-          <button class="btn primary">Check</button>
-        </form>
-        <div class="adv-out" aria-live="polite"></div>
-      </section>
-
-      <section class="panel adv" id="adv-sell">
-        <h2 class="panel-title">Sell or hold? <span class="aside">${house} · ${Math.round((h?.cut ?? 0.05) * 100)}% cut</span></h2>
-        <form class="adv-form">
-          ${itemField("so-item", "Item you have")}
-          <label class="fld small"><span>How many</span><input id="so-qty" inputmode="numeric" value="${esc(recall("so-qty", "1"))}"></label>
-          <button class="btn primary">Advise</button>
-        </form>
-        <div class="adv-out" aria-live="polite"></div>
-      </section>
-
-      <section class="panel adv" id="adv-cancel">
-        <h2 class="panel-title">Cancel or let it ride? <span class="aside">one of your listings</span></h2>
-        <form class="adv-form">
-          ${itemField("cr-item", "Item")}
-          <label class="fld"><span>Your price per unit</span><input id="cr-price" placeholder="12g30s" value="${esc(recall("cr-price"))}" required></label>
-          <label class="fld small"><span>Qty</span><input id="cr-qty" inputmode="numeric" value="${esc(recall("cr-qty", "1"))}"></label>
-          <label class="fld"><span>Time left</span><select id="cr-tl">
-            ${[["SHORT", "Short (< 30 min)"], ["MEDIUM", "Medium (30 min–2 h)"], ["LONG", "Long (2–12 h)"], ["VERY_LONG", "Very long (12–48 h)"]]
-              .map(([v, l]) => `<option value="${v}" ${recall("cr-tl", "LONG") === v ? "selected" : ""}>${l}</option>`).join("")}
-          </select></label>
-          <button class="btn primary">Decide</button>
-        </form>
-        <div class="adv-out" aria-live="polite"></div>
-      </section>
-
-      <section class="panel adv wide" id="adv-flips">
-        <h2 class="panel-title">Worth flipping now <span class="aside">both houses · after cut and deposit</span></h2>
-        <div class="adv-out" aria-live="polite"><div class="empty-state">Looking for flips…</div></div>
-      </section>
-    </div>`;
-
-  bindAutocomplete();
-  const q = (o) => new URLSearchParams({ house: state.house, ...o });
-  advForm("adv-price", () => ({ item: $("#pc-item").value, price: $("#pc-price").value }), (v) => `/api/advice/price?${q(v)}`, renderPriceCheck);
-  advForm("adv-sell", () => ({ item: $("#so-item").value, qty: $("#so-qty").value || "1" }), (v) => `/api/advice/sell?${q(v)}`, renderSellAdvice);
-  advForm("adv-cancel", () => ({ item: $("#cr-item").value, price: $("#cr-price").value, qty: $("#cr-qty").value || "1", time_left: $("#cr-tl").value }),
-    (v) => `/api/advice/cancel?${q(v)}`, renderCancelAdvice);
-  loadFlips();
+    <section class="panel flips-panel">
+      <div class="flips-head">
+        <div>
+          <h2 class="panel-title">Flips</h2>
+          <p class="flips-lede">Small, low-risk trades for the gold you have. Profit is after the AH cut and deposit.</p>
+        </div>
+        <div class="gold-control">
+          <label for="gold-num">Your gold</label>
+          <div class="gold-row">
+            <input type="range" id="gold-range" min="0" max="1000" value="${toPos(gold)}" aria-label="Your gold">
+            <span class="gold-input"><input id="gold-num" inputmode="decimal" value="${gold}"><span>g</span></span>
+          </div>
+          <small id="gold-note"></small>
+        </div>
+      </div>
+      <div id="flips-out" aria-live="polite"><div class="empty-state">Finding flips…</div></div>
+      <details class="rules">
+        <summary>How flips are chosen</summary>
+        <ul class="reasons">
+          <li>One flip uses at most half your gold, and only buys what sells within about a day at the floor sales rate (the largest single sale is ignored).</li>
+          <li>Each flip needs at least a 25% return after the AH cut (5% Horde, 15% Blackwater) and an estimated deposit.</li>
+          <li>Resale is never above the item's market value, and is just under the cheapest competing listing.</li>
+          <li><b>Relist:</b> buy listings dumped well below the next price in a house, then relist just under that next price. It never buys out a market.</li>
+          <li><b>Cross:</b> buy on Blackwater, sell on Horde, for items Horde buys at least twice a day (5+ sales seen).</li>
+          <li><b>Alliance:</b> buy on Horde, sell on Blackwater at least 5% under what Alliance players pay at home, only for items the Alliance buys 3+ times a day. Blackwater's own price only matters as competition.</li>
+        </ul>
+      </details>
+    </section>`;
+  const range = $("#gold-range"), num = $("#gold-num");
+  let timer;
+  const set = (g, from) => {
+    g = Math.min(GOLD_MAX, Math.max(GOLD_MIN, Math.round(g)));
+    if (from !== "num") num.value = g;
+    if (from !== "range") range.value = toPos(g);
+    store.set("gold", g);
+    $("#gold-note").textContent = `One flip uses at most ${g / 2 >= 1 ? Math.floor(g / 2) + "g" : "half"}.`;
+    clearTimeout(timer);
+    timer = setTimeout(() => loadFlips(g), 120);
+  };
+  range.addEventListener("input", () => set(toGold(+range.value), "range"));
+  num.addEventListener("input", () => { const v = parseFloat(num.value); if (v > 0) set(v, "num"); });
+  set(gold);
 }
 
-function advForm(id, values, url, render) {
-  const sec = $(`#${id}`), out = sec.querySelector(".adv-out");
-  sec.querySelector("form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const v = values();
-    for (const el of sec.querySelectorAll("input, select")) if (el.id) remember(el.id, el.value);
-    sec.querySelectorAll(".ac-list").forEach((l) => { l.hidden = true; });
-    out.innerHTML = `<p class="fine">Working it out…</p>`;
-    try { out.innerHTML = render(await api(url(v))); }
-    catch (err) { out.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
-  });
-}
-
-function itemLink(it) {
-  return `<a class="adv-item" href="#/item/${it.item_id}">${esc(it.name)}</a>`;
-}
-
-function reasons(list) {
-  return `<ul class="reasons">${list.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`;
-}
-
-function renderPriceCheck(r) {
-  const it = r.item;
-  return `
-    <div class="verdict-row">${verdictChip(r.verdict)}<span class="verdict-text">to buy ${itemLink(it)} at ${money(r.price)}</span></div>
-    <div class="verdict-row">${verdictChip(r.sell_verdict)}<span class="verdict-text">to sell at that price</span></div>
-    <dl class="facts">
-      <div><dt>Market value</dt><dd>${money(it.market_value)}</dd></div>
-      <div><dt>Lowest now</dt><dd>${money(it.min)}</dd></div>
-      <div><dt>Usually sells for</dt><dd>${money(it.typical_sold_price)}</dd></div>
-      <div><dt>Cheaper listed now</dt><dd>${count(r.units_listed_cheaper)}</dd></div>
-    </dl>
-    ${reasons(r.reasons)}${confNote(it.confidence)}`;
-}
-
-function renderSellAdvice(r) {
-  const it = r.item;
-  const what = r.verdict === "HOLD" ? `hold your ${count(r.qty)} ${itemLink(it)}` :
-    `list ${count(r.list_now)}${r.list_now !== r.qty ? ` of ${count(r.qty)}` : ""} ${itemLink(it)}${r.suggested_price ? ` at ${money(r.suggested_price)}` : ""}`;
-  return `
-    <div class="verdict-row">${verdictChip(r.verdict)}<span class="verdict-text">${what}</span></div>
-    ${r.verdict !== "HOLD" && r.net_if_all_sell ? `<dl class="facts">
-      <div><dt>You'd get</dt><dd>${money(r.net_if_all_sell)}</dd></div>
-      <div><dt>Time to sell</dt><dd>${esc(r.sells_in || "—")}</dd></div>
-      <div><dt>Sold per day</dt><dd>${range(it.sold_per_day, it.sold_per_day_lo, it.sold_per_day_hi)}</dd></div>
-      <div><dt>Best time to post</dt><dd>${esc(r.best_time || "not known yet")}</dd></div>
-    </dl>` : ""}
-    ${reasons(r.reasons)}${confNote(it.confidence)}`;
-}
-
-function renderCancelAdvice(r) {
-  const it = r.item;
-  const what = r.verdict === "CANCEL AND RELIST" ? `relist ${itemLink(it)} at ${money(r.relist_price)}` : `keep ${itemLink(it)} at ${money(r.my_price)}`;
-  const better = Math.max(r.ride_expected_value, r.relist_expected_value) || 1;
-  const bar = (label, v, sells, on) => `<div class="ev ${on ? "on" : ""}"><span>${label}</span>
-    <span class="ev-bar"><i style="width:${Math.max(2, (v / better) * 100)}%"></i></span>${money(v)}<small>${sells.toFixed(1)} of ${count(r.qty)} sell</small></div>`;
-  return `
-    <div class="verdict-row">${verdictChip(r.verdict)}<span class="verdict-text">${what}</span></div>
-    ${r.verdict === "ALREADY CHEAPEST" ? "" : `<div class="evs">
-      ${bar("Let it ride", r.ride_expected_value, r.ride_expected_units_sold, r.verdict === "LET IT RIDE")}
-      ${bar("Cancel & relist", r.relist_expected_value, r.relist_expected_units_sold, r.verdict === "CANCEL AND RELIST")}
-    </div>`}
-    ${reasons(r.reasons)}${confNote(it.confidence)}`;
-}
-
-async function loadFlips() {
-  const out = $("#adv-flips .adv-out");
+async function loadFlips(gold) {
+  const out = $("#flips-out");
+  if (!out) return;
   let r;
-  try { r = await api("/api/advice/flips?limit=12"); }
-  catch (err) { out.innerHTML = `<p class="error">${esc(err.message)}</p>`; return; }
+  try { r = await api(`/api/flips?gold=${gold}&limit=30`); }
+  catch (err) { out.innerHTML = emptyState("No flips yet", esc(err.message)); return; }
+  const updated = `<p class="fine">Recomputed ${ago(r.computed_at)}, right after the last auction house update.${
+    r.confidence === "good" ? "" : r.confidence === "early" ? " Early estimate: under 3 days of sales history." : " Fair estimate: under 10 days of history."}${
+    r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Alliance flips are off."}</p>`;
   if (!r.flips.length) {
-    out.innerHTML = emptyState("Nothing worth flipping right now", "No item is listed far enough below what it reliably sells for, after the cut and deposit. That's a normal answer on a busy realm; check again next session.") + confNote(r.confidence);
+    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g right now`, "That's a normal answer: no listing is far enough under what it reliably sells for. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
     return;
   }
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
-    <thead><tr><th>Item</th><th>Buy</th><th>Cost</th><th>Sell at</th><th>Profit</th><th>Sells in</th><th>Alliance</th></tr></thead>
+    <thead><tr><th>Item</th><th>Buy</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Sells in</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr>
-      <td><a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a></td>
-      <td>${count(f.buy_units)} on ${factionName(f.buy_house)} up to ${money(f.buy_up_to_price)}</td>
-      <td>${money(f.buy_cost)}</td>
-      <td>${money(f.sell_at)} on ${factionName(f.sell_house)}</td>
-      <td class="pos">${money(f.expected_profit)} <span class="sub-num">${pct(f.roi)} return</span></td>
-      <td>${f.days_to_sell < 1 ? "under a day" : `${f.days_to_sell.toFixed(1)} days`}</td>
-      <td title="${esc(f.alliance_note || "")}">${f.sell_house !== "blackwater" || f.buy_house === "blackwater" ? `<span class="none">—</span>`
-        : f.alliance_price ? `${money(f.alliance_price)}${f.alliance_flipper_margin > 0 ? `<span class="sub-num">their flip +${plain(f.alliance_flipper_margin)}</span>` : ""}`
-        : `<span class="sub-num">not listed</span>`}</td></tr>`).join("")}</tbody>
-  </table></div>
-  <p class="fine">Buys only what sold within 3 days at the floor rate, ignoring the single biggest sale; needs at least 5 separate sales seen. Resale is at market value or just under the cheapest competing listing, whichever is lower. Horde → Blackwater flips also need Alliance to pay at least 5% more at home than your Blackwater price.</p>${confNote(r.confidence)}`;
+      <td><span class="kind kind-${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || esc(f.kind)}</span>
+        <a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a><span class="sub-num why">${esc(f.why)}</span></td>
+      <td data-label="Buy">${count(f.buy_units)} on ${factionName(f.buy_house)}<span class="sub-num">up to ${plain(f.buy_up_to_price)} each</span></td>
+      <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold</span></td>
+      <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}</span></td>
+      <td data-label="Profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.roi)} return</span></td>
+      <td data-label="Sells in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}</td></tr>`).join("")}</tbody>
+  </table></div>${updated}`;
 }
 
-function bindAutocomplete() {
-  document.querySelectorAll(".ac").forEach((box) => {
-    const input = box.querySelector("input"), list = box.querySelector(".ac-list");
-    let timer, items = [], active = -1;
-    const close = () => { list.hidden = true; active = -1; };
-    const pick = (i) => { input.value = items[i].name; close(); };
-    const paint = () => {
-      list.innerHTML = items.map((it, i) => `<li class="q${it.quality} ${i === active ? "active" : ""}" data-i="${i}">${esc(it.name)}</li>`).join("");
-      list.hidden = !items.length;
-    };
-    input.addEventListener("input", () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        if (input.value.trim().length < 2) { items = []; return close(); }
-        items = await api(`/api/suggest?house=${state.house}&q=${encodeURIComponent(input.value)}`).catch(() => []);
-        active = -1; paint();
-      }, 150);
-    });
-    input.addEventListener("keydown", (e) => {
-      if (list.hidden) return;
-      if (e.key === "ArrowDown") { active = Math.min(items.length - 1, active + 1); paint(); e.preventDefault(); }
-      else if (e.key === "ArrowUp") { active = Math.max(0, active - 1); paint(); e.preventDefault(); }
-      else if (e.key === "Enter" && active >= 0) { pick(active); e.preventDefault(); }
-      else if (e.key === "Escape") close();
-    });
-    list.addEventListener("mousedown", (e) => { const li = e.target.closest("[data-i]"); if (li) { pick(+li.dataset.i); e.preventDefault(); } });
-    input.addEventListener("blur", () => setTimeout(close, 100));
-  });
+function funnelTable(funnel) {
+  const routes = Object.entries(funnel || {}).filter(([, f]) => f.candidates > 0).sort();
+  if (!routes.length) return "";
+  return `<div class="scroll-x"><table class="mini funnel">
+    <thead><tr><th>Route</th><th>Items checked</th><th>Sells too slowly</th><th>No price gap</th><th>Needs more gold</th><th>Not listed to buy</th></tr></thead>
+    <tbody>${routes.map(([route, f]) => `<tr><td>${esc(route.replace(/(^|→ )(\w)/g, (m) => m.toUpperCase()))}</td><td>${count(f.candidates)}</td>
+      <td>${count(f.sells_too_slowly)}</td><td>${count(f.no_profitable_gap)}</td><td>${count(f.needs_more_gold)}</td><td>${count(f.not_listed_to_buy)}</td></tr>`).join("")}</tbody>
+  </table></div>`;
 }
 
 /* router */
@@ -704,7 +606,7 @@ function route() {
   $("#layout").classList.toggle("full", section !== "browse");
   if (m) return renderItem(m[1], params.get("variant") || "");
   if (section === "status") return renderStatus();
-  if (section === "advisor") return renderAdvisor();
+  if (section === "advisor") return renderFlips();
   refreshList();
 }
 

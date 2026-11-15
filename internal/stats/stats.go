@@ -1,11 +1,9 @@
-// Package stats holds the small amount of statistics the advisor relies on: shrinking sparse
-// rates toward a prior (empirical Bayes), Beta credible intervals, and a time-of-day demand
-// profile for a non-homogeneous Poisson arrival model.
+// Package stats holds the small amount of statistics the reports rely on: shrinking sparse
+// rates toward a prior (empirical Bayes) and Beta credible intervals.
 package stats
 
 import (
 	"math"
-	"time"
 
 	"gonum.org/v1/gonum/stat/distuv"
 )
@@ -68,74 +66,3 @@ func Interval(loRate, hiRate, n, level float64) (float64, float64) {
 }
 
 func clampRate(r float64) float64 { return math.Max(0, math.Min(1, r)) }
-
-// Profile is the share of a day's demand falling in each local hour (sums to 1).
-type Profile [24]float64
-
-// Flat is a profile with demand spread evenly over the day.
-func Flat() Profile {
-	var p Profile
-	for i := range p {
-		p[i] = 1.0 / 24
-	}
-	return p
-}
-
-// ProfileFrom turns per-hour sales counts into a profile, shrunk toward prior with strength m
-// (in the same units as counts). Sparse items lean on the prior; busy items speak for themselves.
-func ProfileFrom(counts [24]float64, prior Profile, m float64) Profile {
-	var total float64
-	for _, c := range counts {
-		total += c
-	}
-	var p Profile
-	for h := range p {
-		p[h] = (counts[h] + m*prior[h]) / (total + m)
-	}
-	return p
-}
-
-// Lambda is the expected number of buyers' units over [start, start+hours] for an item selling
-// perDay units a day, following the profile in loc (a non-homogeneous Poisson rate).
-func (p Profile) Lambda(perDay float64, start time.Time, hours float64, loc *time.Location) float64 {
-	if perDay <= 0 || hours <= 0 {
-		return 0
-	}
-	t := start.In(loc)
-	var lambda float64
-	remaining := hours
-	for remaining > 1e-9 {
-		h := t.Hour()
-		into := float64(t.Minute())/60 + float64(t.Second())/3600
-		step := math.Min(1-into, remaining)
-		lambda += perDay * p[h] * step
-		remaining -= step
-		t = t.Add(time.Duration(step * float64(time.Hour)))
-	}
-	return lambda
-}
-
-// HoursUntil is how long until the expected demand from start reaches units (capped at 60 days).
-func (p Profile) HoursUntil(perDay float64, start time.Time, units float64, loc *time.Location) float64 {
-	if units <= 0 {
-		return 0
-	}
-	if perDay <= 0 {
-		return math.Inf(1)
-	}
-	t := start.In(loc)
-	var got, hours float64
-	for hours < 24*60 {
-		h := t.Hour()
-		into := float64(t.Minute())/60 + float64(t.Second())/3600
-		step := 1 - into
-		rate := perDay * p[h] // units per hour
-		if rate > 0 && got+rate*step >= units {
-			return hours + (units-got)/rate
-		}
-		got += rate * step
-		hours += step
-		t = t.Add(time.Duration(step * float64(time.Hour)))
-	}
-	return math.Inf(1)
-}

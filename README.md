@@ -1,18 +1,18 @@
 # ah-scanner (`ahc`)
 
 A private price and sell-through history for the WoW Forever **EU PvP Horde and Blackwater**
-auction houses, built from Blizzard's API. The web UI opens on an **Advisor** for the questions
-you have standing at the AH:
+auction houses, built from Blizzard's API. The web UI opens on **Flips**: small, low-risk
+trades sized to the gold you have (a slider, default 40g):
 
-- **Is this a good price?** A verdict for buying and for selling, against 7 days of prices and
-  what's listed now.
-- **Sell or hold?** For items you have: sell now (with price and time to sell), sell in parts,
-  or hold (price unusually low or a supply glut).
-- **Cancel or let it ride?** For one of your listings: expected gold either way, deposit rules
-  included.
-- **Worth flipping?** Buy-and-resell gaps within a house or across Horde and Blackwater.
+- **Relist:** listings dumped well under the next price in a house; buy them, relist just under.
+- **Cross:** cheaper on Blackwater than it reliably sells for on Horde.
+- **Alliance:** cheaper on Horde than Alliance players pay at home, for items the Alliance buys
+  several times a day; sold to them on Blackwater.
 
-Plus **Browse** (every item, price history, when-to-post heatmap) and the same answers as MCP
+Each flip uses at most half your gold, buys only what sells within about a day at the floor
+sales rate, needs a 25%+ return after cut and deposit, and never resells above market value.
+
+Plus **Browse** (every item, price history, when-to-post heatmap) and the same data as MCP
 tools for Claude at `/mcp`.
 
 One Go binary, one SQLite file, one Docker container on the NUC.
@@ -136,9 +136,8 @@ claude mcp add --transport http ahc http://<nuc>:4653/mcp \
   --header "Authorization: Bearer $AHC_MCP_TOKEN"
 ```
 
-Tools (all read-only): `price_check`, `sell_or_hold`, `cancel_or_ride`, `flips`,
-`sell_advice` (when to post), `search_items`, `item_summary`, `movers`, `collector_status`.
-Claude can read a screenshot of your bags or AH listings and call these for you.
+Tools (all read-only): `flips` (with your gold), `sell_advice` (when to post an item),
+`search_items`, `item_summary`, `movers`, `collector_status`.
 
 ## How the numbers are worked out
 
@@ -150,11 +149,9 @@ Descriptive statistics and one simple stochastic model, chosen for a short, nois
 - **Sell rates by time of day:** shrunk toward the item's overall rate by empirical Bayes (so one
   lucky auction can't make a time slot look great), with an 80% Beta interval covering both
   "did it sell?" and "how many auctions?". Uses gonum.
-- **Time to sell, cancel or ride:** buyers arrive as a Poisson process following the item's
-  hour-of-day pattern (shrunk toward the house pattern, then toward flat); your place in line
-  comes from the order book.
-- **Flips:** need at least 5 separate sales seen, ignore the single biggest sale, and resell at
-  market value or just under the cheapest competing listing.
+- **Flips:** sales speed comes from daily counts of separate confirmed sales, with the single
+  largest sale removed (one bulk buyer or a misread cancel can't make a market look liquid).
+  The expensive part is computed right after each publish; your gold is applied per request.
 - **Thresholds** (hold below 80% of market value, a glut at 1.4× normal supply, and similar) are
   heuristics until a few weeks of outcomes allow backtesting them.
 
@@ -173,6 +170,7 @@ against a full week of real data.
 | `sale_event` (partial commodity buys only) | 30 days | < 0.3 GB |
 | `item_snapshot` (per-item price per snapshot) | 30 days full, 6-hourly to 180 days | ~1.8 GB |
 | `item_daily` | forever | +0.7 GB/year |
+| Alliance auctions (view-only, tracked for its sales) | 30 days | ~4–5 GB more |
 
 ## Known gaps
 

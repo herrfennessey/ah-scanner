@@ -2,212 +2,90 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/herrfennessey/ah-scanner/internal/report"
 )
 
-func (s *Server) adviceHouse(h House) report.AdviceHouse {
-	return report.AdviceHouse{ID: h.ID, Faction: h.Faction, Cut: h.Cut, PriceOnly: h.ViewOnly}
-}
-
-// tradeHouse resolves a house for the advisor, which reads tracked auctions: a price-only
-// house has none, so its verdicts would all be computed from an empty order book.
-func (s *Server) tradeHouse(ctx context.Context, house string) (House, error) {
-	h, err := s.houseByName(ctx, house)
-	if err == nil && h.ViewOnly {
-		err = errors.New(h.Faction + " is a view-only house (prices only, no auction tracking); ask about a tradeable house")
-	}
-	return h, err
-}
-
-func (s *Server) adviceCfg() report.AdviceConfig {
-	return report.AdviceConfig{AmbiguousWeight: s.Cfg.AmbiguousWeight, DepositRate: s.Cfg.DepositRate, Now: time.Now()}
-}
-
-// The advisor operations, shared by the HTTP API and the MCP tools.
-
-func (s *Server) priceCheck(ctx context.Context, house, item, price string) (*report.PriceCheck, error) {
-	h, err := s.tradeHouse(ctx, house)
-	if err != nil {
-		return nil, err
-	}
-	p, err := report.ParseGold(price)
-	if err != nil {
-		return nil, err
-	}
-	ic, err := report.LoadItemContext(ctx, s.Store, s.adviceHouse(h), s.adviceCfg(), item, "")
-	if err != nil {
-		return nil, err
-	}
-	return report.CheckPrice(ic, p), nil
-}
-
-func (s *Server) sellOrHold(ctx context.Context, house, item string, qty int64) (*report.SellAdvice, error) {
-	h, err := s.tradeHouse(ctx, house)
-	if err != nil {
-		return nil, err
-	}
-	ic, err := report.LoadItemContext(ctx, s.Store, s.adviceHouse(h), s.adviceCfg(), item, "")
-	if err != nil {
-		return nil, err
-	}
-	var typMin, typListed int64
-	var best string
-	if a, err := report.AnalyzeSell(ctx, s.Store, report.SellOptions{
-		Options: report.Options{HouseID: h.ID, HouseName: h.Name, Cut: h.Cut, DepositRate: s.Cfg.DepositRate, Days: 14, Now: time.Now()},
-		Item:    strconv.FormatInt(ic.ItemID, 10), BlockHours: 3, AmbiguousWeight: s.Cfg.AmbiguousWeight,
-	}); err == nil {
-		typMin, typListed, best = a.Now.TypicalMin, a.Now.TypicalListed, a.Best
-	}
-	return report.AdviseSell(ic, qty, h.Cut, typMin, typListed, best), nil
-}
-
-func (s *Server) cancelOrRide(ctx context.Context, house, item, price string, qty int64, timeLeft string, duration float64) (*report.CancelAdvice, error) {
-	h, err := s.tradeHouse(ctx, house)
-	if err != nil {
-		return nil, err
-	}
-	p, err := report.ParseGold(price)
-	if err != nil {
-		return nil, err
-	}
-	ic, err := report.LoadItemContext(ctx, s.Store, s.adviceHouse(h), s.adviceCfg(), item, "")
-	if err != nil {
-		return nil, err
-	}
-	return report.AdviseCancel(ic, p, qty, strings.ToUpper(timeLeft), h.Cut, duration), nil
-}
+// Flips are planned per request from inputs the collector precomputes after each publish, so
+// a request only applies the player's gold: no database scans.
 
 type flipsResult struct {
 	Flips      []report.Flip                 `json:"flips"`
-	Confidence string                        `json:"confidence"`
+	Gold       int64                         `json:"gold"`
+	ComputedAt int64                         `json:"computed_at"`
+	Confidence string                        `json:"confidence" jsonschema:"early (<3 days of history), fair (<10 days) or good"`
 	Funnel     map[string]*report.FlipFunnel `json:"funnel" jsonschema:"per route: how many items each rule rejected"`
+	Alliance   string                        `json:"alliance" jsonschema:"tracked, price_only or missing: whether Alliance sales can be judged"`
 }
 
-func (s *Server) flips(ctx context.Context, limit int, minProfit int64) (*flipsResult, error) {
-	hs, err := s.houseList(ctx)
+// flipInputs returns the stored inputs, decoding them only when they change.
+func (s *Server) flipInputs(ctx context.Context) (*report.FlipInputs, error) {
+	t, err := s.Store.FlipCacheTime(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var ahs []report.AdviceHouse
-	for _, h := range hs {
-		ahs = append(ahs, s.adviceHouse(h))
+	s.mu.Lock()
+	if s.flipCache != nil && s.flipCache.ComputedAt == t {
+		in := s.flipCache
+		s.mu.Unlock()
+		return in, nil
 	}
-	funnel := map[string]*report.FlipFunnel{}
-	f, conf, err := report.FindFlips(ctx, s.Store, ahs, s.adviceCfg(), report.FlipOptions{Limit: limit, MinProfit: minProfit, Funnel: funnel})
+	s.mu.Unlock()
+	if t == 0 {
+		return nil, errors.New("flips aren't computed yet: they appear after the collector's first scan")
+	}
+	_, b, err := s.Store.LoadFlipCache(ctx)
 	if err != nil {
 		return nil, err
 	}
+	in := &report.FlipInputs{}
+	if err := json.Unmarshal(b, in); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.flipCache = in
+	s.mu.Unlock()
+	return in, nil
+}
+
+func (s *Server) flips(ctx context.Context, gold int64, limit int) (*flipsResult, error) {
+	in, err := s.flipInputs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f, funnel := report.PlanFlips(in, report.FlipOptions{Gold: gold, Limit: limit})
 	if f == nil {
 		f = []report.Flip{}
 	}
-	return &flipsResult{Flips: f, Confidence: conf, Funnel: funnel}, nil
-}
-
-// HTTP handlers
-
-func qint(r *http.Request, k string, def int64) int64 {
-	if v, err := strconv.ParseInt(r.URL.Query().Get(k), 10, 64); err == nil && v > 0 {
-		return v
+	ally := "missing"
+	for _, h := range in.Houses {
+		if h.Faction == "alliance" {
+			ally = "price_only"
+			if h.Tracked {
+				ally = "tracked"
+			}
+		}
 	}
-	return def
-}
-
-func (s *Server) apiPriceCheck(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	res, err := s.priceCheck(r.Context(), q.Get("house"), q.Get("item"), q.Get("price"))
-	if err != nil {
-		fail(w, 400, err)
-		return
+	if gold <= 0 {
+		gold = 40 * 10000
 	}
-	writeJSON(w, res)
-}
-
-func (s *Server) apiSell(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	res, err := s.sellOrHold(r.Context(), q.Get("house"), q.Get("item"), qint(r, "qty", 1))
-	if err != nil {
-		fail(w, 400, err)
-		return
-	}
-	writeJSON(w, res)
-}
-
-func (s *Server) apiCancel(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	res, err := s.cancelOrRide(r.Context(), q.Get("house"), q.Get("item"), q.Get("price"), qint(r, "qty", 1), q.Get("time_left"), float64(qint(r, "duration", 24)))
-	if err != nil {
-		fail(w, 400, err)
-		return
-	}
-	writeJSON(w, res)
+	return &flipsResult{Flips: f, Gold: gold, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
 }
 
 func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
-	res, err := s.flips(r.Context(), int(qint(r, "limit", 15)), qint(r, "min_profit", 20000))
+	gold, _ := strconv.ParseFloat(r.URL.Query().Get("gold"), 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	start := time.Now()
+	res, err := s.flips(r.Context(), int64(gold*10000), max(1, min(limit, 100)))
 	if err != nil {
-		fail(w, 500, err)
+		fail(w, 503, err)
 		return
 	}
+	w.Header().Set("Server-Timing", "plan;dur="+strconv.FormatInt(time.Since(start).Milliseconds(), 10))
 	writeJSON(w, res)
-}
-
-type suggestion struct {
-	ID      int64  `json:"id"`
-	Name    string `json:"name"`
-	Quality int    `json:"quality"`
-}
-
-// apiSuggest powers item autocomplete: names containing the query, most traded first.
-func (s *Server) apiSuggest(w http.ResponseWriter, r *http.Request) {
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	out := []suggestion{}
-	if len(q) < 2 {
-		writeJSON(w, out)
-		return
-	}
-	h, err := s.houseParam(r)
-	if err != nil {
-		writeJSON(w, out)
-		return
-	}
-	rows, err := s.buildRows(r.Context(), h.ID)
-	if err != nil {
-		fail(w, 500, err)
-		return
-	}
-	seen := map[int64]bool{}
-	type scored struct {
-		sg    suggestion
-		score float64
-	}
-	var hits []scored
-	for _, row := range rows {
-		name := strings.ToLower(row.Name)
-		if seen[row.ID] || !strings.Contains(name, q) {
-			continue
-		}
-		seen[row.ID] = true
-		score := row.SoldEst*float64(row.Fair) + float64(row.Available)
-		if strings.HasPrefix(name, q) {
-			score *= 10
-		}
-		hits = append(hits, scored{suggestion{row.ID, row.Name, row.Quality}, score})
-	}
-	for i := 0; i < len(hits) && i < 8; i++ {
-		best := i
-		for j := i + 1; j < len(hits); j++ {
-			if hits[j].score > hits[best].score {
-				best = j
-			}
-		}
-		hits[i], hits[best] = hits[best], hits[i]
-		out = append(out, hits[i].sg)
-	}
-	writeJSON(w, out)
 }

@@ -27,6 +27,9 @@ var schema string
 
 type Store struct {
 	DB *sql.DB
+	// Migrated lists columns added when this database was opened ("table.column"). Callers use
+	// it to backfill data the new columns need.
+	Migrated []string
 }
 
 // Open opens (creating if needed) the database in WAL mode so readers never block the collector.
@@ -44,7 +47,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	return &Store{DB: db}, nil
+	added, err := migrate(db)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return &Store{DB: db, Migrated: added}, nil
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
@@ -502,4 +510,55 @@ func (s *Store) PublishTimes(ctx context.Context, since int64) (map[string][]int
 		out[key] = append(out[key], lm)
 	}
 	return out, rows.Err()
+}
+
+// migrate adds columns introduced after a database was first created. CREATE TABLE IF NOT
+// EXISTS leaves existing tables alone, so new columns are added here.
+func migrate(db *sql.DB) ([]string, error) {
+	var added []string
+	add := []struct{ table, column, decl string }{
+		{"item_daily", "sales", "INT DEFAULT 0"},
+		{"item_daily", "largest_sale", "INT DEFAULT 0"},
+	}
+	for _, a := range add {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, a.table, a.column).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", a.table, a.column, a.decl)); err != nil {
+				return nil, err
+			}
+			added = append(added, a.table+"."+a.column)
+		}
+	}
+	return added, nil
+}
+
+// SaveFlipCache stores the precomputed flip inputs (opaque bytes to the store).
+func (s *Store) SaveFlipCache(ctx context.Context, computedAt int64, data []byte) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO flip_cache (id, computed_at, data) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET computed_at=excluded.computed_at, data=excluded.data`, computedAt, data)
+	return err
+}
+
+// FlipCacheTime returns when the flip inputs were last computed (0 if never).
+func (s *Store) FlipCacheTime(ctx context.Context) (int64, error) {
+	var t int64
+	err := s.DB.QueryRowContext(ctx, `SELECT computed_at FROM flip_cache WHERE id=1`).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return t, err
+}
+
+// LoadFlipCache returns the stored flip inputs, or nil if none.
+func (s *Store) LoadFlipCache(ctx context.Context) (int64, []byte, error) {
+	var t int64
+	var b []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT computed_at, data FROM flip_cache WHERE id=1`).Scan(&t, &b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, nil
+	}
+	return t, b, err
 }

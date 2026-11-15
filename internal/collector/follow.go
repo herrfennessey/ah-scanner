@@ -192,7 +192,7 @@ func (c *Collector) runFollow(ctx context.Context, nightly interface{ Next(time.
 		}
 		if applied {
 			c.lookupItems(ctx)
-			c.hourlyRollup(ctx)
+			c.RefreshAfterPublish(ctx)
 		}
 		c.pruneRaw()
 

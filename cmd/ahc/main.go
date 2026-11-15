@@ -150,10 +150,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		if cmd == "once" {
 			err := c.Cycle(ctx)
-			now := time.Now()
-			if _, rerr := rollup.Range(ctx, st.DB, now, now, rollup.Options{AmbiguousWeight: cfg.AmbiguousWeight}); rerr != nil {
-				return errors.Join(err, rerr)
-			}
+			c.RefreshAfterPublish(ctx) // today's rollup and the flip inputs
 			return err
 		}
 		if cfg.Listen != "" {

@@ -7,7 +7,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -269,37 +268,4 @@ func Sparkline(vals []int64) string {
 		}
 	}
 	return b.String()
-}
-
-// ParseGold reads a price as typed by a player: "12g 30s 5c", "12g30s", "45s", "80c",
-// "12.5g", or a bare number meaning gold ("12.5").
-func ParseGold(s string) (int64, error) {
-	s = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
-	if s == "" {
-		return 0, fmt.Errorf("empty price")
-	}
-	if v, err := strconv.ParseFloat(s, 64); err == nil {
-		return int64(v*10000 + 0.5), nil
-	}
-	var total float64
-	num := ""
-	for _, r := range s {
-		switch {
-		case (r >= '0' && r <= '9') || r == '.':
-			num += string(r)
-		case r == 'g' || r == 's' || r == 'c':
-			v, err := strconv.ParseFloat(num, 64)
-			if err != nil {
-				return 0, fmt.Errorf("can't read price %q", s)
-			}
-			total += v * map[rune]float64{'g': 10000, 's': 100, 'c': 1}[r]
-			num = ""
-		default:
-			return 0, fmt.Errorf("can't read price %q: use e.g. 12g30s", s)
-		}
-	}
-	if num != "" {
-		return 0, fmt.Errorf("can't read price %q: add g, s or c after %s", s, num)
-	}
-	return int64(total + 0.5), nil
 }

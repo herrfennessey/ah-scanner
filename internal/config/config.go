@@ -23,10 +23,16 @@ type House struct {
 	Name    string `yaml:"name"`    // optional exact name, to disambiguate when several houses share a faction
 	// Cut is the AH cut on sales (0.05 faction, 0.15 Blackwater). Defaults by faction.
 	Cut *float64 `yaml:"cut"`
-	// PriceOnly records prices and supply without tracking auctions: for a house you can't
-	// trade on (the other faction on a PvP realm) that still moves demand on Blackwater.
+	// ViewOnly marks a house you can't trade on (the other faction on a PvP realm). It is
+	// still scanned, because its prices and sales drive demand on the shared Blackwater house.
+	ViewOnly bool `yaml:"view_only"`
+	// PriceOnly records prices and supply without tracking individual auctions (no sales
+	// numbers). Saves disk; implies ViewOnly.
 	PriceOnly bool `yaml:"price_only"`
 }
+
+// Tradeable reports whether the player can buy and sell on this house.
+func (h House) Tradeable() bool { return !h.ViewOnly && !h.PriceOnly }
 
 // AHCut returns the configured or default auction house cut for this house.
 func (h House) AHCut() float64 {
