@@ -27,9 +27,6 @@ var schema string
 
 type Store struct {
 	DB *sql.DB
-	// Migrated lists columns added when this database was opened ("table.column"). Callers use
-	// it to backfill data the new columns need.
-	Migrated []string
 }
 
 // Open opens (creating if needed) the database in WAL mode so readers never block the collector.
@@ -47,12 +44,11 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	added, err := migrate(db)
-	if err != nil {
+	if _, err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	return &Store{DB: db, Migrated: added}, nil
+	return &Store{DB: db}, nil
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
@@ -561,4 +557,20 @@ func (s *Store) LoadFlipCache(ctx context.Context) (int64, []byte, error) {
 		return 0, nil, nil
 	}
 	return t, b, err
+}
+
+// Meta returns a stored marker value, or "" if unset.
+func (s *Store) Meta(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.DB.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetMeta stores a marker value.
+func (s *Store) SetMeta(ctx context.Context, key, value string) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
 }

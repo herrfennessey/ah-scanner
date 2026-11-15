@@ -58,7 +58,7 @@ func (s *Server) flips(ctx context.Context, gold int64, limit int) (*flipsResult
 	if err != nil {
 		return nil, err
 	}
-	f, funnel := report.PlanFlips(in, report.FlipOptions{Gold: gold, Limit: limit})
+	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Limit: limit})
 	if f == nil {
 		f = []report.Flip{}
 	}
@@ -71,15 +71,15 @@ func (s *Server) flips(ctx context.Context, gold int64, limit int) (*flipsResult
 			}
 		}
 	}
-	if gold <= 0 {
-		gold = 40 * 10000
-	}
 	return &flipsResult{Flips: f, Gold: gold, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
 }
 
 func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
 	gold, _ := strconv.ParseFloat(r.URL.Query().Get("gold"), 64)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit <= 0 {
+		limit = 15
+	}
 	start := time.Now()
 	res, err := s.flips(r.Context(), int64(gold*10000), max(1, min(limit, 100)))
 	if err != nil {

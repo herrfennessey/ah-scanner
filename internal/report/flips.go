@@ -45,6 +45,9 @@ type FlipStat struct {
 	Sales        int64       `json:"sales"`          // separate certain sales in the window
 	Volatile     bool        `json:"volatile"`
 	Book         []FlipLevel `json:"book,omitempty"` // cheapest first (tradeable houses only)
+	// Beyond is the price of the first level left out of a truncated Book (0 = Book is
+	// complete), so buying the whole cached book can't hide the next competing listing.
+	Beyond int64 `json:"beyond,omitempty"`
 }
 
 type FlipItem struct {
@@ -107,6 +110,19 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 		if first.Valid && first.Int64 > start {
 			start = first.Int64
 		}
+		if h.Tracked {
+			// Sales exist only since auctions were tracked here, which can be later than the
+			// first snapshot (a house switched from price_only): count from the first day with any.
+			var firstSale sql.NullString
+			if err := st.DB.QueryRowContext(ctx, `SELECT MIN(day) FROM item_daily WHERE house_id=? AND day>=? AND sold_lo>0`, h.ID, from).Scan(&firstSale); err != nil {
+				return nil, err
+			}
+			if firstSale.Valid {
+				if t, _, err := rollup.DayBounds(firstSale.String, rollup.Berlin); err == nil && t > start {
+					start = t
+				}
+			}
+		}
 		span := math.Max(float64(now.Unix()-start)/86400, 1.0/24)
 		in.SpanDays = math.Min(in.SpanDays, span)
 
@@ -130,7 +146,8 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 			if fair > 0 {
 				s.Fair = fair
 			}
-			s.Volatile = cv > 0.5
+			// Any volatile day in the window counts: today's partial row must not clear it.
+			s.Volatile = s.Volatile || cv > 0.5
 			a := agg[k]
 			if a == nil {
 				a = &sums{}
@@ -216,8 +233,12 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 				continue
 			}
 			s := stats[k][h.Faction]
-			if s != nil && len(s.Book) < bookLevels {
+			switch {
+			case s == nil:
+			case len(s.Book) < bookLevels:
 				s.Book = append(s.Book, l)
+			case s.Beyond == 0:
+				s.Beyond = l.P // levels arrive cheapest first: this is the next one up
 			}
 		}
 		rows.Close()
@@ -234,10 +255,16 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 	}
 	for rows.Next() {
 		var id, sp int64
-		rows.Scan(&id, &sp)
+		if err := rows.Scan(&id, &sp); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		sellPrice[id] = sp
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	sort.Slice(keep, func(i, j int) bool {
 		return keep[i].Item < keep[j].Item || (keep[i].Item == keep[j].Item && keep[i].Variant < keep[j].Variant)
@@ -324,7 +351,8 @@ type FlipFunnel struct {
 }
 
 // PlanFlips applies the rules and the player's gold to precomputed inputs. It touches no database.
-func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel) {
+// It also returns the gold it planned for (the default when o.Gold is unset).
+func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, int64) {
 	o = o.withDefaults()
 	maxSpend := int64(float64(o.Gold) * o.MaxShare)
 	funnel := map[string]*FlipFunnel{}
@@ -383,7 +411,7 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel) {
 	if o.Limit > 0 && len(flips) > o.Limit {
 		flips = flips[:o.Limit]
 	}
-	return flips, funnel
+	return flips, funnel, o.Gold
 }
 
 // planOne decides one item on one route. reason is "" (a flip), "slow", "gap" or "budget".
@@ -433,12 +461,11 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	if kind != "relist" && s.Min > 0 && s.Min-1 < sellAt {
 		sellAt = s.Min - 1
 	}
-	var units, cost, upTo int64
-	for iter := 0; iter < 4; iter++ {
+	var units, cost, upTo, left int64
+	fill := func() {
 		net := float64(sellAt)*(1-sell.Cut) - float64(it.Deposit)
 		maxBuy := int64(net / (1 + o.MinROI))
-		units, cost, upTo = 0, 0, 0
-		var left int64
+		units, cost, upTo, left = 0, 0, 0, 0
 		for _, l := range b.Book {
 			if l.P > maxBuy || units >= capUnits {
 				break
@@ -452,9 +479,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			upTo = l.P
 			left = l.Q - take
 		}
-		if kind != "relist" || units == 0 {
-			break
-		}
+	}
+	fill()
+	for iter := 0; iter < 4 && kind == "relist" && units > 0; iter++ {
 		next := int64(0)
 		if left > 0 {
 			next = upTo
@@ -467,6 +494,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 					break
 				}
 			}
+			if next == 0 {
+				next = b.Beyond // bought the whole cached book: the competition is past it
+			}
 		}
 		want := ceiling
 		if next > 0 && next-1 < want {
@@ -476,6 +506,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			break
 		}
 		sellAt = want
+		fill() // the purchase must match the price it's resold at
 	}
 	if units == 0 {
 		// Is there a gap at all, ignoring the budget?

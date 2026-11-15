@@ -11,7 +11,7 @@ var (
 func g(gold float64) int64 { return int64(gold * 10000) }
 
 func plan(items []FlipItem, gold float64) []Flip {
-	f, _ := PlanFlips(&FlipInputs{Houses: []FlipHouse{horde, bw, ally}, Items: items}, FlipOptions{Gold: g(gold)})
+	f, _, _ := PlanFlips(&FlipInputs{Houses: []FlipHouse{horde, bw, ally}, Items: items}, FlipOptions{Gold: g(gold)})
 	return f
 }
 
@@ -101,5 +101,25 @@ func TestSmallSureFlipSurvivesBiggerBudget(t *testing.T) {
 		if f := plan([]FlipItem{it}, gold); len(f) != 1 {
 			t.Fatalf("%.0fg: a sure ~1g flip should still show: %+v", gold, f)
 		}
+	}
+}
+
+func TestRelistRespectsListingsBeyondCachedBook(t *testing.T) {
+	// Codex's case: 40 one-unit levels at 1,000–1,039c are cached, a 41st sits at 1,040c,
+	// market value 10,000c. Buying all 40 must not price the relist at market value.
+	var book []FlipLevel
+	for p := int64(1000); p < 1040; p++ {
+		book = append(book, FlipLevel{P: p, Q: 1})
+	}
+	it := FlipItem{Item: 6, Name: "Cached Book", Houses: map[string]*FlipStat{
+		"horde": {Fair: 10000, Min: 1000, Sales: 100, SalesPerDay: 40, RobustPerDay: 40, Book: book, Beyond: 1040},
+	}}
+	if f := plan([]FlipItem{it}, 40); len(f) != 0 {
+		t.Fatalf("the 1,040c listing beyond the cache is the real competition: %+v", f)
+	}
+	// Without a level beyond the cache (the book really ends), the market-value ceiling applies.
+	it.Houses["horde"].Beyond = 0
+	if f := plan([]FlipItem{it}, 40); len(f) != 1 || f[0].SellAt != 10000 {
+		t.Fatalf("complete book: %+v", f)
 	}
 }

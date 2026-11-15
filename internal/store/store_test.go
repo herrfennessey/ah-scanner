@@ -124,3 +124,16 @@ func TestBackupCompressedAndRotated(t *testing.T) {
 		t.Fatalf("not a compressed SQLite file: %q %v", head, err)
 	}
 }
+
+func TestMeta(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	if v, err := st.Meta(ctx, "k"); err != nil || v != "" {
+		t.Fatalf("unset: %q %v", v, err)
+	}
+	st.SetMeta(ctx, "k", "a")
+	st.SetMeta(ctx, "k", "b")
+	if v, _ := st.Meta(ctx, "k"); v != "b" {
+		t.Fatalf("got %q", v)
+	}
+}

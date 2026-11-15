@@ -150,8 +150,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		if cmd == "once" {
 			err := c.Cycle(ctx)
-			c.RefreshAfterPublish(ctx) // today's rollup and the flip inputs
-			return err
+			return errors.Join(err, c.RefreshAfterPublish(ctx)) // today's rollup and the flip inputs
 		}
 		if cfg.Listen != "" {
 			// Its own connection pool: the collector's single connection is held for whole

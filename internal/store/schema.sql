@@ -50,3 +50,6 @@ CREATE INDEX IF NOT EXISTS item_daily_day ON item_daily (house_id, day);
 
 -- flip inputs, recomputed after each publish (single row)
 CREATE TABLE IF NOT EXISTS flip_cache (id INTEGER PRIMARY KEY CHECK (id = 1), computed_at INT, data BLOB);
+
+-- one-off markers (e.g. completed backfills)
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

@@ -557,12 +557,19 @@ function renderFlips() {
   set(gold);
 }
 
+let flipsSeq = 0;
 async function loadFlips(gold) {
-  const out = $("#flips-out");
-  if (!out) return;
+  const seq = ++flipsSeq;
   let r;
   try { r = await api(`/api/flips?gold=${gold}&limit=30`); }
-  catch (err) { out.innerHTML = emptyState("No flips yet", esc(err.message)); return; }
+  catch (err) {
+    const out = $("#flips-out");
+    if (out && seq === flipsSeq) out.innerHTML = emptyState("No flips yet", esc(err.message));
+    return;
+  }
+  // A slower response for an earlier gold amount must not overwrite a newer one.
+  const out = $("#flips-out");
+  if (!out || seq !== flipsSeq) return;
   const updated = `<p class="fine">Recomputed ${ago(r.computed_at)}, right after the last auction house update.${
     r.confidence === "good" ? "" : r.confidence === "early" ? " Early estimate: under 3 days of sales history." : " Fair estimate: under 10 days of history."}${
     r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Alliance flips are off."}</p>`;
