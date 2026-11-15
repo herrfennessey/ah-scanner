@@ -59,7 +59,8 @@ func (s *Server) flips(ctx context.Context, gold int64, risk string, limit int) 
 	if err != nil {
 		return nil, err
 	}
-	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Risk: report.ParseRisk(risk), Limit: limit})
+	r := report.ParseRisk(risk)
+	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Risk: r, Limit: limit})
 	if f == nil {
 		f = []report.Flip{}
 	}
@@ -72,7 +73,7 @@ func (s *Server) flips(ctx context.Context, gold int64, risk string, limit int) 
 			}
 		}
 	}
-	return &flipsResult{Flips: f, Gold: gold, Risk: report.ParseRisk(risk), ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
+	return &flipsResult{Flips: f, Gold: gold, Risk: r, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
 }
 
 func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {

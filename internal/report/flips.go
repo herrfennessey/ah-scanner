@@ -468,6 +468,13 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 // book whose next level is still in the band falls back to every listed unit.
 func nearSupply(s *FlipStat, price, skip int64) int64 {
 	limit := int64(float64(price) * competeBand)
+	if len(s.Book) == 0 {
+		// No book loaded (a price_only house): all we know is the cheapest price and the count.
+		if s.Min > 0 && s.Min <= limit {
+			return max(0, s.Listed-skip)
+		}
+		return 0
+	}
 	var n, total int64
 	for _, l := range s.Book {
 		total += l.Q
@@ -538,11 +545,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		units, cost, upTo, left = 0, 0, 0, 0
 		if relist {
 			// What we buy here leaves the band and comes back into it at our price, so the
-			// whole band must clear, whatever we take.
+			// whole band must clear, whatever we take: checked once the price settles, since
+			// the band at the starting price (the ceiling) can be far wider than at the final one.
 			capUnits = clearCap
-			if nearSupply(s, sellAt, 0) > clearCap {
-				capUnits = 0
-			}
 		} else {
 			capUnits = clearCap - nearSupply(s, sellAt, 0)
 		}
@@ -588,7 +593,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		sellAt = want
 		fill() // the purchase must match the price it's resold at
 	}
-	if units == 0 && capUnits <= 0 {
+	if (units == 0 && capUnits <= 0) || (relist && units > 0 && nearSupply(s, sellAt, 0) > clearCap) {
 		return Flip{}, "slow" // too much competing supply near the resale price
 	}
 	if units == 0 {

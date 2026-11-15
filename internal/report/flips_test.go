@@ -48,6 +48,33 @@ func TestRelistNeverBuysOutTheMarket(t *testing.T) {
 	if len(f) != 0 {
 		t.Fatalf("partly buying a level isn't a gimme: %+v", f)
 	}
+	// With gold to buy all 30, the 60 units then near 9g are ~10 days of sales: still no flip.
+	if f := planRisk([]FlipItem{it}, 1000, RiskHigh); len(f) != 0 {
+		t.Fatalf("bought out the market: %+v", f)
+	}
+}
+
+func TestRelistBandJudgedAtTheResalePrice(t *testing.T) {
+	// Dumped at 2g, next at 5g, a wall at 9g (market value). Resale is just under 5g, where only
+	// 12 units compete; the 500 at 9g are beyond the band and must not block the flip.
+	it := FlipItem{Item: 10, Name: "Wall", Houses: map[string]*FlipStat{
+		"horde": {Fair: g(9), Min: g(2), Sales: 400, SalesPerDay: 60, RobustPerDay: 60,
+			Book: []FlipLevel{{g(2), 2}, {g(5), 10}, {g(9), 500}}},
+	}}
+	if f := plan([]FlipItem{it}, 40); len(f) != 1 || f[0].SellAt != g(5)-1 || f[0].Competing != 10 {
+		t.Fatalf("%+v", f)
+	}
+}
+
+func TestCompetitionOnPriceOnlyHouse(t *testing.T) {
+	// No book on a price_only sell house: the listed count near the price is the competition.
+	s := &FlipStat{Min: 1000, Listed: 40}
+	if n := nearSupply(s, 999, 0); n != 40 {
+		t.Fatalf("got %d", n)
+	}
+	if n := nearSupply(s, 500, 0); n != 0 {
+		t.Fatalf("got %d", n)
+	}
 }
 
 func TestBudgetScalesTheFlip(t *testing.T) {

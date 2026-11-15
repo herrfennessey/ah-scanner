@@ -518,7 +518,8 @@ const RISK = {
 
 function renderFlips() {
   const gold = Math.min(GOLD_MAX, Math.max(GOLD_MIN, store.get("gold", 40)));
-  let risk = RISK[store.get("risk", "low")] ? store.get("risk", "low") : "low";
+  let risk = store.get("risk", "low");
+  if (!Object.hasOwn(RISK, risk)) risk = "low";
   $("#view").innerHTML = `
     <section class="panel flips-panel">
       <div class="flips-head">
