@@ -48,6 +48,8 @@ type acc struct {
 	soldLo    int64
 	ambiguous int64
 	ended     int64
+	sales     int64 // separate certain sales (sold auctions + partial commodity buys)
+	largest   int64 // units in the single largest certain sale
 }
 
 // DayString formats a local date as YYYY-MM-DD.
@@ -140,7 +142,7 @@ func Day(ctx context.Context, db *sql.DB, houseID int64, day string, opt Options
 		return 0, err
 	}
 
-	rows, err = db.QueryContext(ctx, `SELECT item_id, variant, kind, outcome, SUM(units) FROM (
+	rows, err = db.QueryContext(ctx, `SELECT item_id, variant, kind, outcome, SUM(units), COUNT(*), MAX(units) FROM (
 		SELECT item_id, variant, kind, outcome, units FROM sale_event WHERE house_id=? AND ts>=? AND ts<?
 		UNION ALL
 		SELECT item_id, variant, kind, outcome, qty_last FROM auction WHERE house_id=? AND closed_at>=? AND closed_at<?
@@ -149,9 +151,9 @@ func Day(ctx context.Context, db *sql.DB, houseID int64, day string, opt Options
 		return 0, err
 	}
 	for rows.Next() {
-		var item, units int64
+		var item, units, n, biggest int64
 		var variant, kind, outcome string
-		if err := rows.Scan(&item, &variant, &kind, &outcome, &units); err != nil {
+		if err := rows.Scan(&item, &variant, &kind, &outcome, &units, &n, &biggest); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -163,6 +165,8 @@ func Day(ctx context.Context, db *sql.DB, houseID int64, day string, opt Options
 		switch {
 		case tracker.Certain(outcome):
 			a.soldLo += units
+			a.sales += n
+			a.largest = max(a.largest, biggest)
 		case tracker.Ambiguous(outcome):
 			a.ambiguous += units
 		}
@@ -184,7 +188,7 @@ func Day(ctx context.Context, db *sql.DB, houseID int64, day string, opt Options
 		return 0, err
 	}
 	ins, err := tx.PrepareContext(ctx, `INSERT INTO item_daily (house_id, item_id, variant, day, fair_unit, min_unit, avg_listed,
-		sold_est, sold_lo, sold_hi, ended, price_cv) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+		sold_est, sold_lo, sold_hi, ended, price_cv, sales, largest_sale) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return 0, err
 	}
@@ -201,7 +205,7 @@ func Day(ctx context.Context, db *sql.DB, houseID int64, day string, opt Options
 		soldEst := a.soldLo + int64(math.Round(opt.AmbiguousWeight*float64(a.ambiguous)))
 		if _, err := ins.ExecContext(ctx, houseID, k.item, k.variant, day,
 			nullIfZero(median(a.p20s)), nullIfZero(a.dayMin), avgListed,
-			soldEst, a.soldLo, a.soldLo+a.ambiguous, a.ended, cv(a.mins)); err != nil {
+			soldEst, a.soldLo, a.soldLo+a.ambiguous, a.ended, cv(a.mins), a.sales, a.largest); err != nil {
 			return 0, err
 		}
 		n++

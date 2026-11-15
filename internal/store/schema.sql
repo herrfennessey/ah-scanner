@@ -44,5 +44,12 @@ CREATE TABLE IF NOT EXISTS item_daily (
   house_id INT, item_id INT, variant TEXT, day TEXT,
   fair_unit INT, min_unit INT, avg_listed INT,
   sold_est INT, sold_lo INT, sold_hi INT, ended INT, price_cv REAL,
+  sales INT DEFAULT 0, largest_sale INT DEFAULT 0, -- separate certain sales, and the biggest one
   PRIMARY KEY (house_id, item_id, variant, day));
 CREATE INDEX IF NOT EXISTS item_daily_day ON item_daily (house_id, day);
+
+-- flip inputs, recomputed after each publish (single row)
+CREATE TABLE IF NOT EXISTS flip_cache (id INTEGER PRIMARY KEY CHECK (id = 1), computed_at INT, data BLOB);
+
+-- one-off markers (e.g. completed backfills)
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

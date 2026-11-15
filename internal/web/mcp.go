@@ -16,7 +16,7 @@ import (
 )
 
 const mcpInstructions = `Private auction house data for WoW Forever (EU, PvP ruleset), collected from Blizzard's API every 30 minutes.
-Houses: "horde" (5% AH cut) and "blackwater" (neutral, 15% cut) are tradeable; "alliance" is view-only (prices and supply, no sales) because a Horde character on a PvP realm can't use it, but Alliance players buy and sell on Blackwater. Prices are copper (1g = 10000c); *_text fields show them as gold.
+Houses: "horde" (5% AH cut) and "blackwater" (neutral, 15% cut) are tradeable; "alliance" is view-only because a Horde character on a PvP realm can't use it, but Alliance players buy and sell on Blackwater, so its prices and sales matter. Prices are copper (1g = 10000c); *_text fields show them as gold.
 Sales are inferred from listings that vanish, so sold figures come as est with a lo–hi range: treat lo as the floor and hi as the ceiling, never as exact.
 History started when the collector was first run; time-of-day advice needs one to two weeks of data and says so when it is thin.
 Times are Europe/Berlin.`
@@ -35,14 +35,8 @@ func (s *Server) mcpHandler() http.Handler {
 		Description: "When and at what price to list an item: price and supply now vs usual for this time, sell rate and expected net per listing by posting time (3-hour blocks and weekday), and how sell rate depends on undercutting."}, s.toolSell)
 	mcp.AddTool(srv, &mcp.Tool{Name: "movers", Annotations: ro,
 		Description: "Items that sell reliably, ranked by gold traded per day (sold per day × market value). Filter by item class, required level and minimum sales."}, s.toolMovers)
-	mcp.AddTool(srv, &mcp.Tool{Name: "price_check", Annotations: ro,
-		Description: "Is this a good price? For an item and a price (e.g. \"12g30s\"), a buyer's verdict (GOOD BUY / FAIR / EXPENSIVE) and a seller's verdict (how long it would take to sell at that price), with reasons."}, s.toolPriceCheck)
-	mcp.AddTool(srv, &mcp.Tool{Name: "sell_or_hold", Annotations: ro,
-		Description: "What to do with items the player holds: SELL NOW (with price and time to sell), SELL IN PARTS (when the stack exceeds what sells per day), HOLD (price unusually low or a supply glut) or TEST THE MARKET."}, s.toolSellOrHold)
-	mcp.AddTool(srv, &mcp.Tool{Name: "cancel_or_ride", Annotations: ro,
-		Description: "For one of the player's own listings (item, their unit price, quantity, time left): LET IT RIDE or CANCEL AND RELIST just under the lowest price, by expected gold including the deposit refund rules."}, s.toolCancelOrRide)
 	mcp.AddTool(srv, &mcp.Tool{Name: "flips", Annotations: ro,
-		Description: "Items to buy and resell for profit after AH cut and deposit, within a house or across Horde and Blackwater. Requires frequent sales in the sell house (5+ separate sales, 2+ a day) and buys only what sells in 3 days at the floor rate. Horde → Blackwater flips also require the Alliance AH price to be at least 5% above the Blackwater resale price, so Alliance players buy from you rather than undercut you. An empty list means nothing is worth flipping right now."}, s.toolFlips)
+		Description: "Small, low-risk trades for the player's gold (default 40g). Three kinds: relist (buy listings dumped well under the next price in a house and relist just under it), cross (buy on Blackwater, sell on Horde) and alliance (buy on Horde, sell on Blackwater under what Alliance players pay at home, only for items the Alliance buys several times a day). Each flip uses at most half the gold, buys only what sells within about a day at the floor rate, needs a 25%+ return and never resells above market value. An empty list means nothing qualifies right now; the funnel says why."}, s.toolFlips)
 	mcp.AddTool(srv, &mcp.Tool{Name: "collector_status", Annotations: ro,
 		Description: "Health of the data: houses, listing counts, last scan time and any collector problems (failing or frozen feeds)."}, s.toolStatus)
 
@@ -318,53 +312,13 @@ func (s *Server) toolMovers(ctx context.Context, _ *mcp.CallToolRequest, in Move
 	return nil, out, nil
 }
 
-type PriceCheckIn struct {
-	Item  string `json:"item" jsonschema:"item ID or name"`
-	Price string `json:"price" jsonschema:"unit price as a player writes it: 12g30s, 45s, 80c or 12.5 (gold)"`
-	House string `json:"house,omitempty" jsonschema:"horde or blackwater; default horde"`
-}
-
-func (s *Server) toolPriceCheck(ctx context.Context, _ *mcp.CallToolRequest, in PriceCheckIn) (*mcp.CallToolResult, *report.PriceCheck, error) {
-	res, err := s.priceCheck(ctx, in.House, in.Item, in.Price)
-	return nil, res, err
-}
-
-type SellOrHoldIn struct {
-	Item  string `json:"item" jsonschema:"item ID or name"`
-	Qty   int64  `json:"qty,omitempty" jsonschema:"how many the player has, default 1"`
-	House string `json:"house,omitempty" jsonschema:"horde or blackwater; default horde"`
-}
-
-func (s *Server) toolSellOrHold(ctx context.Context, _ *mcp.CallToolRequest, in SellOrHoldIn) (*mcp.CallToolResult, *report.SellAdvice, error) {
-	res, err := s.sellOrHold(ctx, in.House, in.Item, max(in.Qty, 1))
-	return nil, res, err
-}
-
-type CancelIn struct {
-	Item          string  `json:"item" jsonschema:"item ID or name"`
-	MyPrice       string  `json:"my_price" jsonschema:"the player's unit price, e.g. 12g30s"`
-	Qty           int64   `json:"qty,omitempty" jsonschema:"quantity on the listing, default 1"`
-	TimeLeft      string  `json:"time_left,omitempty" jsonschema:"SHORT, MEDIUM, LONG or VERY_LONG as shown in game; default LONG"`
-	DurationHours float64 `json:"duration_hours,omitempty" jsonschema:"duration if relisted, default 24"`
-	House         string  `json:"house,omitempty" jsonschema:"horde or blackwater; default horde"`
-}
-
-func (s *Server) toolCancelOrRide(ctx context.Context, _ *mcp.CallToolRequest, in CancelIn) (*mcp.CallToolResult, *report.CancelAdvice, error) {
-	res, err := s.cancelOrRide(ctx, in.House, in.Item, in.MyPrice, max(in.Qty, 1), in.TimeLeft, in.DurationHours)
-	return nil, res, err
-}
-
 type FlipsIn struct {
-	MinProfitGold float64 `json:"min_profit_gold,omitempty" jsonschema:"minimum expected profit per flip in gold, default 2"`
-	Limit         int     `json:"limit,omitempty" jsonschema:"default 15, max 50"`
+	Gold  float64 `json:"gold,omitempty" jsonschema:"how much gold the player has to invest, default 40"`
+	Limit int     `json:"limit,omitempty" jsonschema:"default 15, max 50"`
 }
 
 func (s *Server) toolFlips(ctx context.Context, _ *mcp.CallToolRequest, in FlipsIn) (*mcp.CallToolResult, *flipsResult, error) {
-	mp := int64(in.MinProfitGold * 10000)
-	if mp <= 0 {
-		mp = 20000
-	}
-	res, err := s.flips(ctx, clampLimit(in.Limit, 15, 50), mp)
+	res, err := s.flips(ctx, int64(in.Gold*10000), clampLimit(in.Limit, 15, 50))
 	return nil, res, err
 }
 

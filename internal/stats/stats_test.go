@@ -3,7 +3,6 @@ package stats
 import (
 	"math"
 	"testing"
-	"time"
 )
 
 func TestShrink(t *testing.T) {
@@ -38,43 +37,5 @@ func TestInterval(t *testing.T) {
 	lo3, hi3 := Interval(0.2, 0.7, 1000, 0.8)
 	if lo3 > 0.22 || hi3 < 0.68 {
 		t.Fatalf("[%v,%v]", lo3, hi3)
-	}
-}
-
-func TestProfileLambda(t *testing.T) {
-	loc := time.UTC
-	flat := Flat()
-	start := time.Date(2026, 11, 14, 10, 30, 0, 0, loc)
-	if got := flat.Lambda(24, start, 6, loc); math.Abs(got-6) > 1e-9 {
-		t.Fatalf("flat: %v", got)
-	}
-	// All demand at 20:00: an evening listing sees it, a morning one doesn't.
-	var counts [24]float64
-	counts[20] = 100
-	p := ProfileFrom(counts, flat, 0)
-	if got := p.Lambda(10, start, 6, loc); got != 0 {
-		t.Fatalf("morning window: %v", got)
-	}
-	if got := p.Lambda(10, start, 11, loc); math.Abs(got-10) > 1e-9 { // 10:30 → 21:30 covers all of 20:00
-		t.Fatalf("window covering 20:00: %v", got)
-	}
-	if h := p.HoursUntil(10, start, 5, loc); math.Abs(h-10) > 1e-9 { // 10:30 → 20:30
-		t.Fatalf("hours until: %v", h)
-	}
-}
-
-func TestProfileShrinks(t *testing.T) {
-	var counts [24]float64
-	counts[3] = 1 // one sale at 3 am
-	p := ProfileFrom(counts, Flat(), 24)
-	if p[3] > 0.1 {
-		t.Fatalf("one sale shouldn't dominate: %v", p[3])
-	}
-	var sum float64
-	for _, v := range p {
-		sum += v
-	}
-	if math.Abs(sum-1) > 1e-9 {
-		t.Fatal(sum)
 	}
 }

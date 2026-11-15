@@ -11,14 +11,15 @@ houses:
   - {id: 113, faction: horde}         # 5% cut
   - {id: 116, faction: blackwater}    # 15% cut
   # View only: a Horde character on a PvP realm can't use the Alliance AH, but Alliance players
-  # buy and sell on Blackwater, so their home prices decide whether a Horde → Blackwater flip
-  # has buyers. Prices and supply only, no auction tracking (~+1.5 GB).
+  # buy on Blackwater when it's cheaper than at home, so Alliance prices and sales speed decide
+  # whether a Horde → Blackwater flip has buyers. Fully tracked for sales (~+4–5 GB at 30 days);
+  # use `price_only: true` instead to keep prices only (no Alliance sales, no H → BW flips).
   #
   # How 110/113/116 were identified as one realm group (2026-11-14): auction IDs are global, so
   # they can't tell. Prices can: arbitrage pulls a group's faction and Blackwater prices together.
   # Across 489 commodities in all six large houses, the grouping {110,113,116} + {111,114,117}
   # fit best in 93% of bootstrap resamples (Alliance 111 instead: 7%; Blackwater 117: 0%).
-  - {id: 110, faction: alliance, price_only: true}
+  - {id: 110, faction: alliance, view_only: true}
 
 # When to collect. "follow" polls each house just after Blizzard publishes it (hourly, at a
 # stable second past the hour that each house learns from its own history), so new data is

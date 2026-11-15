@@ -28,6 +28,8 @@ type House struct {
 	Name      string
 	Faction   string
 	PriceOnly bool
+	ViewOnly  bool
+	Cut       float64 // AH cut on sales
 }
 
 type Collector struct {
@@ -37,8 +39,6 @@ type Collector struct {
 	Log    *slog.Logger
 	Houses []House
 	Status *Status
-
-	lastRollupHour string
 }
 
 var kinds = []listing.Kind{listing.Gear, listing.Commodity}
@@ -64,7 +64,7 @@ func ResolveHouses(index []blizzard.HouseRef, want []config.House) ([]House, err
 		}
 		switch {
 		case len(cands) == 1:
-			out = append(out, House{ID: cands[0].ID, Name: cands[0].Name, Faction: w.Faction, PriceOnly: w.PriceOnly})
+			out = append(out, House{ID: cands[0].ID, Name: cands[0].Name, Faction: w.Faction, PriceOnly: w.PriceOnly, ViewOnly: !w.Tradeable(), Cut: w.AHCut()})
 		case len(cands) == 0 && w.ID != 0:
 			return nil, fmt.Errorf("house id %d (%s) not in the index, or its faction changed", w.ID, w.Faction)
 		case len(cands) == 0:
@@ -95,12 +95,36 @@ func (c *Collector) Setup(ctx context.Context) error {
 		if err := c.Store.UpsertHouse(ctx, h.ID, h.Name, h.Faction); err != nil {
 			return err
 		}
-		c.Log.Info("house resolved", "id", h.ID, "name", h.Name, "faction", h.Faction, "price_only", h.PriceOnly)
+		c.Log.Info("house resolved", "id", h.ID, "name", h.Name, "faction", h.Faction, "price_only", h.PriceOnly, "view_only", h.ViewOnly)
 	}
 	c.Houses = houses
 	// Drop feeds of houses no longer configured, or they stay stale in status.json forever and
 	// keep `ahc health` and the alert failing.
 	c.Status.KeepFeeds(houses)
+	// Daily rows rolled up before the sales columns existed read as zero sales: recompute the
+	// last week once so flips have evidence straight away. Recorded in the database, so it runs
+	// exactly once whichever process opened the database first.
+	const backfillKey = "backfill.item_daily.sales"
+	if done, err := c.Store.Meta(ctx, backfillKey); err != nil {
+		return err
+	} else if done == "" {
+		now := time.Now().In(rollup.Berlin)
+		// Like `ahc rollup`: stay a day inside retention, or the oldest day is rebuilt from
+		// partly pruned detail; 0 means keep forever.
+		days := 7
+		for _, keep := range []int{c.Cfg.AuctionRetentionDays, c.Cfg.SnapshotFullDays} {
+			if keep > 0 {
+				days = min(days, keep-1)
+			}
+		}
+		days = max(days, 1)
+		c.Log.Info("backfilling daily sales counts", "days", days)
+		if _, err := rollup.Range(ctx, c.Store.DB, now.AddDate(0, 0, -(days-1)), now, rollup.Options{AmbiguousWeight: c.Cfg.AmbiguousWeight}); err != nil {
+			c.Log.Error("backfill", "err", err)
+		} else if err := c.Store.SetMeta(ctx, backfillKey, now.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -161,18 +185,7 @@ func (c *Collector) collectCycle(ctx context.Context) {
 	if err := c.Cycle(ctx); err != nil {
 		c.Log.Error("cycle failed", "err", err)
 	}
-	c.hourlyRollup(ctx)
-}
-
-// hourlyRollup keeps today's daily rows fresh for the UI, at most once an hour.
-func (c *Collector) hourlyRollup(ctx context.Context) {
-	local := time.Now().In(rollup.Berlin)
-	if h := local.Format("2006-01-02T15"); h != c.lastRollupHour {
-		c.lastRollupHour = h
-		if _, err := rollup.Range(ctx, c.Store.DB, local, local, rollup.Options{AmbiguousWeight: c.Cfg.AmbiguousWeight}); err != nil {
-			c.Log.Error("hourly rollup", "err", err)
-		}
-	}
+	c.refresh(ctx)
 }
 
 // Cycle fetches every house and kind once. It returns an error if any fetch failed.

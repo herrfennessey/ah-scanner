@@ -16,6 +16,7 @@ import (
 
 	"github.com/herrfennessey/ah-scanner/internal/config"
 	"github.com/herrfennessey/ah-scanner/internal/listing"
+	"github.com/herrfennessey/ah-scanner/internal/report"
 	"github.com/herrfennessey/ah-scanner/internal/rollup"
 	"github.com/herrfennessey/ah-scanner/internal/store"
 )
@@ -39,6 +40,15 @@ func fixture(t *testing.T, token string) (*httptest.Server, *store.Store) {
 	l[0].Quantity = 4
 	st.ApplySnapshot(ctx, store.Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: now + 1800, SHA256: "b"}, l)
 	rollup.Range(ctx, st.DB, time.Now(), time.Now(), rollup.Options{AmbiguousWeight: 0.25})
+	// As the collector does after each publish: precompute the flip inputs.
+	in, err := report.BuildFlipInputs(ctx, st, []report.FlipHouse{
+		{ID: 113, Faction: "horde", Cut: 0.05, Tracked: true}, {ID: 116, Faction: "blackwater", Cut: 0.15, Tracked: true},
+	}, 0.2, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(in)
+	st.SaveFlipCache(ctx, in.ComputedAt, b)
 
 	cfg := config.Default()
 	cfg.DataDir = dir
@@ -101,7 +111,7 @@ func TestMCPTools(t *testing.T) {
 	for _, tl := range tools.Tools {
 		names = append(names, tl.Name)
 	}
-	if got := strings.Join(names, ","); !strings.Contains(got, "cancel_or_ride") || len(names) != 9 {
+	if got := strings.Join(names, ","); !strings.Contains(got, "flips") || len(names) != 6 {
 		t.Fatalf("tools: %s", got)
 	}
 
@@ -137,16 +147,9 @@ func TestMCPTools(t *testing.T) {
 		t.Fatalf("item: %v", item)
 	}
 	call("movers", map[string]any{"min_sold_lo": 1})
-	if pc := call("price_check", map[string]any{"item": "Elemental Air", "price": "20s"}); pc["verdict"] == nil {
-		t.Fatalf("price_check: %v", pc)
+	if fl := call("flips", map[string]any{"gold": 40}); fl["gold"].(float64) != 400000 || fl["funnel"] == nil {
+		t.Fatalf("flips: %v", fl)
 	}
-	if so := call("sell_or_hold", map[string]any{"item": "7069", "qty": 12}); so["verdict"] == nil {
-		t.Fatalf("sell_or_hold: %v", so)
-	}
-	if cr := call("cancel_or_ride", map[string]any{"item": "7069", "my_price": "22s89c", "qty": 4}); cr["verdict"] != "ALREADY CHEAPEST" {
-		t.Fatalf("cancel_or_ride: %v", cr)
-	}
-	call("flips", map[string]any{})
 	if st := call("collector_status", map[string]any{}); st["houses"] == nil {
 		t.Fatalf("status: %v", st)
 	}

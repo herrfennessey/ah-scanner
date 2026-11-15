@@ -31,8 +31,9 @@ type Server struct {
 	Store *store.Store
 	Log   *slog.Logger
 
-	mu    sync.Mutex
-	cache map[int64]cachedList
+	mu        sync.Mutex
+	cache     map[int64]cachedList
+	flipCache *report.FlipInputs
 }
 
 type cachedList struct {
@@ -48,11 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/item/{id}/history", s.history)
 	mux.HandleFunc("GET /api/item/{id}/sell", s.sell)
 	mux.HandleFunc("GET /api/status", s.status)
-	mux.HandleFunc("GET /api/advice/price", s.apiPriceCheck)
-	mux.HandleFunc("GET /api/advice/sell", s.apiSell)
-	mux.HandleFunc("GET /api/advice/cancel", s.apiCancel)
-	mux.HandleFunc("GET /api/advice/flips", s.apiFlips)
-	mux.HandleFunc("GET /api/suggest", s.apiSuggest)
+	mux.HandleFunc("GET /api/flips", s.apiFlips)
 	mcpH := s.mcpHandler()
 	for _, m := range []string{"POST", "GET", "DELETE"} {
 		mux.Handle(m+" /mcp", mcpH) // explicit methods: "/mcp" alone conflicts with "GET /"
@@ -101,7 +98,8 @@ type House struct {
 	Items    int64   `json:"items"`
 	LastScan int64   `json:"last_scan"`
 	Cut      float64 `json:"cut"`
-	ViewOnly bool    `json:"view_only"` // price-only house: shown for reference, not traded on
+	ViewOnly bool    `json:"view_only"` // not tradeable: shown for reference (Alliance from a Horde character)
+	Tracked  bool    `json:"tracked"`   // individual auctions tracked, so sales are known
 }
 
 func (s *Server) houseList(ctx context.Context) ([]House, error) {
@@ -118,7 +116,7 @@ func (s *Server) houseList(ctx context.Context) ([]House, error) {
 		} else {
 			s.Store.DB.QueryRowContext(ctx, `SELECT name FROM house WHERE id=?`, id).Scan(&name)
 		}
-		hh := House{ID: id, Faction: h.Faction, Name: name, Cut: h.AHCut(), ViewOnly: h.PriceOnly}
+		hh := House{ID: id, Faction: h.Faction, Name: name, Cut: h.AHCut(), ViewOnly: !h.Tradeable(), Tracked: !h.PriceOnly}
 		s.Store.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(n_auctions),0), COALESCE(MAX(fetched_at),0) FROM snapshot
 			WHERE id IN (SELECT MAX(id) FROM snapshot WHERE house_id=? GROUP BY kind)`, id).Scan(&hh.Listings, &hh.LastScan)
 		s.Store.DB.QueryRowContext(ctx, `SELECT count(DISTINCT item_id) FROM item_snapshot
