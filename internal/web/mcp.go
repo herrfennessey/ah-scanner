@@ -36,7 +36,7 @@ func (s *Server) mcpHandler() http.Handler {
 	mcp.AddTool(srv, &mcp.Tool{Name: "movers", Annotations: ro,
 		Description: "Items that sell reliably, ranked by gold traded per day (sold per day × market value). Filter by item class, required level and minimum sales."}, s.toolMovers)
 	mcp.AddTool(srv, &mcp.Tool{Name: "flips", Annotations: ro,
-		Description: "Small, low-risk trades for the player's gold (default 40g). Three kinds: relist (buy listings dumped well under the next price in a house and relist just under it), cross (buy on Blackwater, sell on Horde) and alliance (buy on Horde, sell on Blackwater under what Alliance players pay at home, only for items the Alliance buys several times a day). Each flip uses at most half the gold, buys only what sells within about a day at the floor rate, needs a 25%+ return and never resells above market value. An empty list means nothing qualifies right now; the funnel says why."}, s.toolFlips)
+		Description: "Small, low-risk trades for the player's gold (default 40g). Three kinds: relist (buy listings dumped well under the next price in a house and relist just under it), cross (buy on Blackwater, sell on Horde) and alliance (buy on Horde, sell on Blackwater under what Alliance players pay at home, only for items the Alliance buys several times a day). The risk level (low by default) sets how long gold may sit in stock: your units plus competing listings within 10% of your price must all sell within ~6 h (low), ~12 h (medium) or ~1.5 days (high), in markets with 20, 10 or 4+ sales a day; it also sets the share of gold per flip (25/40/60%) and the minimum return (15/20/30%). Flips are ranked by profit per day of holding. Never resells above market value. An empty list means nothing qualifies right now; the funnel says why."}, s.toolFlips)
 	mcp.AddTool(srv, &mcp.Tool{Name: "collector_status", Annotations: ro,
 		Description: "Health of the data: houses, listing counts, last scan time and any collector problems (failing or frozen feeds)."}, s.toolStatus)
 
@@ -314,11 +314,12 @@ func (s *Server) toolMovers(ctx context.Context, _ *mcp.CallToolRequest, in Move
 
 type FlipsIn struct {
 	Gold  float64 `json:"gold,omitempty" jsonschema:"how much gold the player has to invest, default 40"`
+	Risk  string  `json:"risk,omitempty" jsonschema:"low (default: busy markets, everything sells within ~6 hours), medium (~12 hours) or high (slower markets, up to ~1.5 days, bigger margins)"`
 	Limit int     `json:"limit,omitempty" jsonschema:"default 15, max 50"`
 }
 
 func (s *Server) toolFlips(ctx context.Context, _ *mcp.CallToolRequest, in FlipsIn) (*mcp.CallToolResult, *flipsResult, error) {
-	res, err := s.flips(ctx, int64(in.Gold*10000), clampLimit(in.Limit, 15, 50))
+	res, err := s.flips(ctx, int64(in.Gold*10000), in.Risk, clampLimit(in.Limit, 15, 50))
 	return nil, res, err
 }
 

@@ -509,9 +509,16 @@ const KIND = {
 const GOLD_MIN = 5, GOLD_MAX = 2000;
 const toGold = (pos) => Math.round(GOLD_MIN * Math.pow(GOLD_MAX / GOLD_MIN, pos / 1000));
 const toPos = (gold) => Math.round(1000 * Math.log(gold / GOLD_MIN) / Math.log(GOLD_MAX / GOLD_MIN));
+// Mirrors riskProfiles in internal/report/flips.go.
+const RISK = {
+  low: { label: "Low", hours: 6, share: 0.25, roi: 0.15, sales: 20, note: "Busy markets only. Everything near your price sells within about 6 hours." },
+  medium: { label: "Medium", hours: 12, share: 0.4, roi: 0.2, sales: 10, note: "Sells within about 12 hours." },
+  high: { label: "High", hours: 36, share: 0.6, roi: 0.3, sales: 4, note: "Slower markets and bigger margins. Gold can sit for a day and a half." },
+};
 
 function renderFlips() {
   const gold = Math.min(GOLD_MAX, Math.max(GOLD_MIN, store.get("gold", 40)));
+  let risk = RISK[store.get("risk", "low")] ? store.get("risk", "low") : "low";
   $("#view").innerHTML = `
     <section class="panel flips-panel">
       <div class="flips-head">
@@ -527,66 +534,84 @@ function renderFlips() {
           </div>
           <small id="gold-note"></small>
         </div>
+        <div class="risk-control" role="radiogroup" aria-label="Risk">
+          <span class="risk-label">Risk</span>
+          <div class="risk-seg">${Object.entries(RISK).map(([k, r]) => `<button type="button" role="radio" data-risk="${k}" aria-checked="${k === risk}">${r.label}</button>`).join("")}</div>
+          <small id="risk-note"></small>
+        </div>
       </div>
       <div id="flips-out" aria-live="polite"><div class="empty-state">Finding flips…</div></div>
       <details class="rules">
         <summary>How flips are chosen</summary>
         <ul class="reasons">
-          <li>One flip uses at most half your gold, and only buys what sells within about a day at the floor sales rate (the largest single sale is ignored).</li>
-          <li>Each flip needs at least a 25% return after the AH cut (5% Horde, 15% Blackwater) and an estimated deposit.</li>
+          <li>Risk sets how long your gold may sit in stock. Your units <i>plus</i> everything other sellers list within 10% of your price must sell within about 6 hours (low), 12 hours (medium) or a day and a half (high), at the floor sales rate (certain sales only, largest single sale ignored). Busy markets are required too: 20, 10 or 4+ separate sales a day.</li>
+          <li>One flip uses at most 25%, 40% or 60% of your gold, and needs at least a 15%, 20% or 30% return after the AH cut (5% Horde, 15% Blackwater) and an estimated deposit. Items whose price swings are left out below high risk.</li>
+          <li>Flips are ranked by profit per day of holding, so quick turnover comes first.</li>
           <li>Resale is never above the item's market value, and is just under the cheapest competing listing.</li>
           <li><b>Relist:</b> buy listings dumped well below the next price in a house, then relist just under that next price. It never buys out a market.</li>
-          <li><b>Cross:</b> buy on Blackwater, sell on Horde, for items Horde buys at least twice a day (5+ sales seen).</li>
-          <li><b>Alliance:</b> buy on Horde, sell on Blackwater at least 5% under what Alliance players pay at home, only for items the Alliance buys 3+ times a day. Blackwater's own price only matters as competition.</li>
+          <li><b>Cross:</b> buy on Blackwater, sell on Horde.</li>
+          <li><b>Alliance:</b> buy on Horde, sell on Blackwater at least 5% under what Alliance players pay at home, only for items the Alliance buys often (the same sales-a-day bar). Blackwater's own price only matters as competition.</li>
         </ul>
       </details>
     </section>`;
   const range = $("#gold-range"), num = $("#gold-num");
-  let timer;
+  let timer, cur = gold;
+  const refresh = () => {
+    const r = RISK[risk], most = cur * r.share;
+    $("#gold-note").textContent = `One flip uses at most ${most >= 1 ? Math.floor(most) + "g" : Math.round(r.share * 100) + "%"}.`;
+    $("#risk-note").textContent = r.note;
+    document.querySelectorAll("[data-risk]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.risk === risk)));
+    clearTimeout(timer);
+    timer = setTimeout(() => loadFlips(cur, risk), 120);
+  };
   const set = (g, from) => {
     g = Math.min(GOLD_MAX, Math.max(GOLD_MIN, Math.round(g)));
     if (from !== "num") num.value = g;
     if (from !== "range") range.value = toPos(g);
     store.set("gold", g);
-    $("#gold-note").textContent = `One flip uses at most ${g / 2 >= 1 ? Math.floor(g / 2) + "g" : "half"}.`;
-    clearTimeout(timer);
-    timer = setTimeout(() => loadFlips(g), 120);
+    cur = g;
+    refresh();
   };
   range.addEventListener("input", () => set(toGold(+range.value), "range"));
   num.addEventListener("input", () => { const v = parseFloat(num.value); if (v > 0) set(v, "num"); });
+  document.querySelectorAll("[data-risk]").forEach((b) => b.addEventListener("click", () => {
+    risk = b.dataset.risk;
+    store.set("risk", risk);
+    refresh();
+  }));
   set(gold);
 }
 
 let flipsSeq = 0;
-async function loadFlips(gold) {
+async function loadFlips(gold, risk) {
   const seq = ++flipsSeq;
   let r;
-  try { r = await api(`/api/flips?gold=${gold}&limit=30`); }
+  try { r = await api(`/api/flips?gold=${gold}&risk=${risk}&limit=30`); }
   catch (err) {
     const out = $("#flips-out");
     if (out && seq === flipsSeq) out.innerHTML = emptyState("No flips yet", esc(err.message));
     return;
   }
-  // A slower response for an earlier gold amount must not overwrite a newer one.
+  // A slower response for an earlier gold amount or risk must not overwrite a newer one.
   const out = $("#flips-out");
   if (!out || seq !== flipsSeq) return;
   const updated = `<p class="fine">Recomputed ${ago(r.computed_at)}, right after the last auction house update.${
     r.confidence === "good" ? "" : r.confidence === "early" ? " Early estimate: under 3 days of sales history." : " Fair estimate: under 10 days of history."}${
     r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Alliance flips are off."}</p>`;
   if (!r.flips.length) {
-    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g right now`, "That's a normal answer: no listing is far enough under what it reliably sells for. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
+    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g at ${RISK[risk].label.toLowerCase()} risk right now`, "That's a normal answer: nothing cheap enough sells fast enough. A higher risk level allows slower markets. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
     return;
   }
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
-    <thead><tr><th>Item</th><th>Buy</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Sells in</th></tr></thead>
+    <thead><tr><th>Item</th><th>Buy</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Sold out in</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr>
       <td><span class="kind kind-${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || esc(f.kind)}</span>
         <a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a><span class="sub-num why">${esc(f.why)}</span></td>
       <td data-label="Buy">${count(f.buy_units)} on ${factionName(f.buy_house)}<span class="sub-num">up to ${plain(f.buy_up_to_price)} each</span></td>
       <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold</span></td>
       <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}</span></td>
-      <td data-label="Profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.roi)} return</span></td>
-      <td data-label="Sells in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}</td></tr>`).join("")}</tbody>
+      <td data-label="Profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.roi)} return · ${plain(f.profit_per_day)} a day</span></td>
+      <td data-label="Sold out in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}<span class="sub-num">${f.competing_units ? `${count(f.competing_units)} others listed near your price` : "no one else near your price"} · ${Math.round(f.sales_per_day)} sales a day</span></td></tr>`).join("")}</tbody>
   </table></div>${updated}`;
 }
 
