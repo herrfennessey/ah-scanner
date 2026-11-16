@@ -308,6 +308,10 @@ func (c *Collector) lookupItems(ctx context.Context) {
 		c.Log.Warn("item lookup query", "err", err)
 		return
 	}
+	haveIcon, err := c.Store.HaveIcons(ctx)
+	if err != nil {
+		c.Log.Warn("item icon query", "err", err)
+	}
 	var found atomic.Int32
 	work := make(chan int64)
 	var wg sync.WaitGroup
@@ -316,7 +320,7 @@ func (c *Collector) lookupItems(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for id := range work {
-				it, err := c.API.Item(ctx, id, c.Cfg.StaticNamespaces)
+				it, err := c.API.Item(ctx, id, c.Cfg.StaticNamespaces, haveIcon[id])
 				if err != nil && !blizzard.IsNotFound(err) {
 					c.Log.Warn("item lookup", "item", id, "err", err)
 				}

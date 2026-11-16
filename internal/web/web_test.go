@@ -154,3 +154,29 @@ func TestMCPTools(t *testing.T) {
 		t.Fatalf("status: %v", st)
 	}
 }
+
+func TestTooltipEndpoint(t *testing.T) {
+	srv, st := fixture(t, "")
+	st.SetItem(context.Background(), store.Item{ID: 7069, Name: "Elemental Air", Tooltip: json.RawMessage(`{"name":"Elemental Air"}`)})
+	resp, err := http.Get(srv.URL + "/api/item/7069/tooltip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Name      string          `json:"name"`
+		Preview   json.RawMessage `json:"preview"`
+		House     string          `json:"house"`
+		Min       int64           `json:"min"`
+		Available int64           `json:"available"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != 200 || out.Name != "Elemental Air" || string(out.Preview) != `{"name":"Elemental Air"}` || out.Min != 2289 || out.Available != 4 || out.House != "horde" {
+		t.Fatalf("%d %+v", resp.StatusCode, out)
+	}
+	resp2, _ := http.Get(srv.URL + "/api/item/999/tooltip")
+	resp2.Body.Close()
+	if resp2.StatusCode != 404 {
+		t.Fatalf("unknown item: %d", resp2.StatusCode)
+	}
+}

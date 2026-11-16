@@ -140,8 +140,9 @@ func AuctionsPath(rulesetID int, houseID int64, commodities bool) string {
 
 var qualities = map[string]int{"POOR": 0, "COMMON": 1, "UNCOMMON": 2, "RARE": 3, "EPIC": 4, "LEGENDARY": 5, "ARTIFACT": 6, "HEIRLOOM": 7}
 
-// Item looks up an item's name and class, trying each static namespace in order.
-func (c *Client) Item(ctx context.Context, id int64, namespaces []string) (store.Item, error) {
+// Item looks up an item's name, class and tooltip (preview_item), trying each static namespace
+// in order. haveIcon skips the media request when the icon is already stored.
+func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIcon bool) (store.Item, error) {
 	var lastErr error
 	for _, ns := range namespaces {
 		var raw struct {
@@ -158,6 +159,7 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string) (store
 			ItemSubclass struct {
 				Name json.RawMessage `json:"name"`
 			} `json:"item_subclass"`
+			PreviewItem json.RawMessage `json:"preview_item"`
 		}
 		err := c.GetJSON(ctx, "/data/wow/item/"+strconv.FormatInt(id, 10), url.Values{"namespace": {ns}}, &raw)
 		if err != nil {
@@ -165,12 +167,14 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string) (store
 			continue
 		}
 		it := store.Item{ID: id, Name: localized(raw.Name), Class: localized(raw.ItemClass.Name), Subclass: localized(raw.ItemSubclass.Name), SellPrice: raw.SellPrice,
-			ItemLevel: raw.Level, ReqLevel: raw.ReqLevel}
+			ItemLevel: raw.Level, ReqLevel: raw.ReqLevel, Tooltip: raw.PreviewItem}
 		if q, ok := qualities[raw.Quality.Type]; ok {
 			it.Quality = q
 		}
 		if it.Name != "" {
-			it.Icon = c.itemIcon(ctx, ns, id)
+			if !haveIcon {
+				it.Icon = c.itemIcon(ctx, ns, id)
+			}
 			return it, nil
 		}
 		lastErr = fmt.Errorf("item %d: no name in %s", id, ns)

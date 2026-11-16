@@ -223,3 +223,23 @@ func TestBadCredentialsFailFast(t *testing.T) {
 		t.Fatalf("should not retry: hits=%d sleeps=%v", f.hits.Load(), *sleeps)
 	}
 }
+
+func TestItemKeepsPreviewAndSkipsKnownIcon(t *testing.T) {
+	var media atomic.Int32
+	_, c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request, _ int32) {
+		if strings.Contains(r.URL.Path, "/media/") {
+			media.Add(1)
+			io.WriteString(w, `{"assets":[{"key":"icon","value":"i.jpg"}]}`)
+			return
+		}
+		io.WriteString(w, `{"name":"Golden Rod","quality":{"type":"COMMON"},"preview_item":{"name":"Golden Rod","sell_price":{"value":250}}}`)
+	})
+	it, err := c.Item(context.Background(), 11128, []string{"static-forever-eu"}, true)
+	if err != nil || it.Name != "Golden Rod" || string(it.Tooltip) != `{"name":"Golden Rod","sell_price":{"value":250}}` || media.Load() != 0 {
+		t.Fatalf("%+v %s err %v media %d", it, it.Tooltip, err, media.Load())
+	}
+	it, _ = c.Item(context.Background(), 11128, []string{"static-forever-eu"}, false)
+	if it.Icon != "i.jpg" || media.Load() != 1 {
+		t.Fatalf("icon %q media %d", it.Icon, media.Load())
+	}
+}

@@ -86,7 +86,7 @@ func probe(ctx context.Context, cfg config.Config, all bool) error {
 			}
 		}
 	}
-	it, err := api.Item(ctx, 7069, cfg.StaticNamespaces)
+	it, err := api.Item(ctx, 7069, cfg.StaticNamespaces, false)
 	if err != nil {
 		fmt.Printf("\nitem lookup: %v\n", err)
 	} else {

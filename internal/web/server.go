@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/item/{id}", s.item)
 	mux.HandleFunc("GET /api/item/{id}/history", s.history)
 	mux.HandleFunc("GET /api/item/{id}/sell", s.sell)
+	mux.HandleFunc("GET /api/item/{id}/tooltip", s.tooltip)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/flips", s.apiFlips)
 	mux.HandleFunc("GET /api/flips/version", s.apiFlipsVersion)
