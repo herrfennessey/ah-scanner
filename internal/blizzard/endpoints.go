@@ -145,6 +145,7 @@ var qualities = map[string]int{"POOR": 0, "COMMON": 1, "UNCOMMON": 2, "RARE": 3,
 // in order. haveIcon skips the media request when the icon is already stored.
 func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIcon bool) (store.Item, error) {
 	var lastErr error
+	allNotFound := len(namespaces) > 0
 	for _, ns := range namespaces {
 		var raw struct {
 			Name      json.RawMessage `json:"name"`
@@ -165,6 +166,7 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIc
 		err := c.GetJSON(ctx, "/data/wow/item/"+strconv.FormatInt(id, 10), url.Values{"namespace": {ns}}, &raw)
 		if err != nil {
 			lastErr = err
+			allNotFound = allNotFound && IsNotFound(err)
 			continue
 		}
 		it := store.Item{ID: id, Name: localized(raw.Name), Class: localized(raw.ItemClass.Name), Subclass: localized(raw.ItemSubclass.Name), SellPrice: raw.SellPrice,
@@ -182,9 +184,11 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIc
 			return it, nil
 		}
 		lastErr = fmt.Errorf("item %d: no name in %s", id, ns)
+		allNotFound = false
 	}
-	if IsNotFound(lastErr) {
-		// Gone from the API: record "no tooltip" so it isn't fetched again every cycle.
+	if allNotFound && IsNotFound(lastErr) {
+		// Gone from every namespace: record "no tooltip" so it isn't fetched again every cycle.
+		// Any other failure stays retryable.
 		return store.Item{ID: id, Tooltip: json.RawMessage("null")}, lastErr
 	}
 	return store.Item{ID: id}, lastErr
