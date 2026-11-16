@@ -852,6 +852,7 @@ async function renderSupply() {
   }).join("");
 
   out.innerHTML = `
+    <div id="supply-charts"></div>
     <h3 class="supply-h">Crates for Merchant's Favor</h3>
     <p class="fine supply-note">Cheapest first: an empty crate plus its cheapest fill, divided by the Favor the sealed crate pays (raw materials 5/10/15, crafted double; Artisan not known yet).</p>
     <div class="scroll-x"><table class="mini flips supply">
@@ -915,6 +916,155 @@ async function renderSupply() {
   });
   $("#zone-pick").addEventListener("change", (e) => { scope = e.target.value || "world"; draw(); });
   draw();
+  supplyCharts(d.history || []);
+}
+
+/* supply charts: is now a cheap time for Favor and rep, against the recent history? */
+const SUPPLY_RANGES = [["2d", 2], ["7d", 7], ["30d", 30]];
+function supplyCharts(history) {
+  const el = $("#supply-charts");
+  if (!el) return;
+  let range = store.get("supplyRange", "7d");
+  if (!SUPPLY_RANGES.some(([k]) => k === range)) range = "7d";
+  const series = [
+    { key: "favor", title: "Gold per Favor", ok: "favor_ok", val: "per_favor", unit: "per Favor",
+      what: "The cheapest crate to fill, per Favor" },
+    { key: "rep", title: "Gold per rep", ok: "rep_ok", val: "per_rep", unit: "per rep", bench: "receipt_rep",
+      what: "The cheapest writ you can buy, per rep. Below zero, its coin pouch pays you" },
+  ];
+  const draw = () => {
+    store.set("supplyRange", range);
+    const days = SUPPLY_RANGES.find(([k]) => k === range)[1];
+    const since = Date.now() / 1000 - days * 86400;
+    const pts = history.filter((p) => p.t >= since);
+    el.innerHTML = `
+      <div class="supply-charts-head">
+        <h3 class="supply-h">Is now a good time?</h3>
+        <div class="risk-seg" role="radiogroup" aria-label="Chart range">${SUPPLY_RANGES.map(([k]) =>
+          `<button type="button" role="radio" data-range="${k}" aria-checked="${k === range}">${k}</button>`).join("")}</div>
+      </div>
+      <div class="supply-charts">${series.map((s) => `
+        <div class="sc-card">
+          <div class="sc-top"><div><div class="sc-title">${s.title}</div><div class="fine">${s.what}.</div></div><div class="sc-now" id="sc-now-${s.key}"></div></div>
+          <div class="sc-chart" id="sc-${s.key}"><div class="chart sc-plot"></div><div class="sc-legend"></div></div>
+        </div>`).join("")}</div>`;
+    for (const s of series) supplyChart(s, pts, range);
+  };
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-range]");
+    if (!b) return;
+    range = b.dataset.range;
+    draw();
+  });
+  draw();
+}
+// Signed short money for axes: "1.2g", "−35c".
+const shortSigned = (c) => (c < 0 ? "−" : "") + shortGold(Math.abs(c));
+// Where the latest value sits among the range: the share of scans that were dearer. 75%+ is a
+// good time to buy, 25% or less a poor one.
+function supplyVerdict(vals, now) {
+  if (vals.length < 6) return { cls: "", text: "Not enough history yet to judge" };
+  const dearer = vals.filter((v) => v > now).length / vals.length;
+  const pct = Math.round(dearer * 100);
+  if (dearer >= 0.75) return { cls: "good", text: `Good time: cheaper than ${pct}% of the period` };
+  if (dearer <= 0.25) return { cls: "bad", text: `Pricey: dearer than ${100 - pct}% of the period` };
+  return { cls: "", text: `Typical: cheaper than ${pct}% of the period` };
+}
+function supplyChart(s, all, range) {
+  const el = $(`#sc-${s.key}`), nowEl = $(`#sc-now-${s.key}`);
+  if (!el) return;
+  const pts = all.filter((p) => p[s.ok]);
+  const latest = all[all.length - 1];
+  if (latest && latest[s.ok]) {
+    const vals = pts.map((p) => p[s.val]);
+    const v = supplyVerdict(vals, latest[s.val]);
+    nowEl.innerHTML = `<div class="sc-val">${s.key === "rep" ? perRep(latest[s.val]) : money(latest[s.val])}<span class="fine"> ${s.unit} now</span></div>
+      <div class="sc-verdict ${v.cls}">${v.text}</div>`;
+  } else {
+    nowEl.innerHTML = `<div class="sc-verdict">Nothing buyable at the last scan</div>`;
+  }
+  if (pts.length < 2) { el.innerHTML = emptyState("Not enough history yet", "A point is added after every Horde scan."); return; }
+
+  const plot = el.querySelector(".sc-plot");
+  const W = plot.clientWidth, H = plot.clientHeight, padL = 54, padR = 12, padT = 10, padB = 26;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+  const vals = pts.map((p) => p[s.val]);
+  const sorted = [...vals].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const benchVals = s.bench ? pts.map((p) => p[s.bench]).filter((v) => v) : [];
+  // Scale to the main series' spread; the benchmark is clipped if it's far off, and zero is
+  // drawn when the series crosses it.
+  let lo = Math.min(...sorted.slice(0, Math.max(1, Math.ceil(sorted.length * 0.02))));
+  let hi = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.98))];
+  // The benchmark joins the scale only when it's within one spread of the series; a far-off one
+  // would flatten the line that matters, so it's named in the legend instead.
+  const benchMed = benchVals.length ? [...benchVals].sort((a, b) => a - b)[Math.floor(benchVals.length / 2)] : 0;
+  const mainSpan = Math.max(1, hi - lo);
+  const benchOn = benchVals.length > 0 && benchMed <= hi + mainSpan && benchMed >= lo - mainSpan;
+  if (benchOn) { lo = Math.min(lo, ...benchVals); hi = Math.max(hi, ...benchVals); }
+  if (s.key === "rep" && lo < 0 && hi < 0) hi = 0;
+  const span = Math.max(1, hi - lo);
+  lo -= span * 0.06; hi += span * 0.08;
+  const x = (t) => padL + ((t - t0) / Math.max(1, t1 - t0)) * (W - padL - padR);
+  const y = (v) => padT + (1 - (Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * (H - padT - padB);
+  const step = (key, ok) => {
+    let d = "", pen = false;
+    all.forEach((p, i) => {
+      if (p.t < t0 || p.t > t1) return;
+      if (!(ok ? p[ok] : p[key])) { pen = false; return; }
+      d += pen ? ` H${x(p.t).toFixed(1)} V${y(p[key]).toFixed(1)}` : ` M${x(p.t).toFixed(1)} ${y(p[key]).toFixed(1)}`;
+      pen = true;
+    });
+    return d;
+  };
+  const grid = [], labels = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + ((hi - lo) * i) / 4;
+    grid.push(`<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/>`);
+    labels.push(`<text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end">${shortSigned(v)}</text>`);
+  }
+  const tl = [], nT = Math.min(5, pts.length);
+  for (let i = 0; i < nT; i++) {
+    const t = t0 + ((t1 - t0) * i) / (nT - 1), d = new Date(t * 1000);
+    const lbl = range === "2d" ? d.toLocaleTimeString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })
+      : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Europe/Berlin" });
+    tl.push(`<text x="${x(t)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === nT - 1 ? "end" : "middle"}">${lbl}</text>`);
+  }
+  const hasZero = lo < 0 && hi > 0;
+  const zero = hasZero ? `<line class="zero" x1="${padL}" x2="${W - padR}" y1="${y(0)}" y2="${y(0)}"/>` : "";
+  const zeroLbl = hasZero ? `<text class="zero-lbl" x="${W - padR - 4}" y="${y(0) + 13}" text-anchor="end">below 0: writs pay you</text>` : "";
+  const line = step(s.val, s.ok);
+  const last = pts[pts.length - 1];
+  plot.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.title)} history">
+    <defs><clipPath id="clip-${s.key}"><rect x="${padL}" y="0" width="${W - padL - padR}" height="${H}"/></clipPath></defs>
+    <g class="grid">${grid.join("")}</g><g class="axis">${labels.join("")}${tl.join("")}</g>
+    <g clip-path="url(#clip-${s.key})">
+      ${zero}
+      <line class="median" x1="${padL}" x2="${W - padR}" y1="${y(median)}" y2="${y(median)}"/>
+      ${benchOn ? `<path class="bench" d="${step(s.bench)}"/>` : ""}
+      <path class="p20" d="${line}"/>
+      <circle class="now-dot" cx="${x(last.t)}" cy="${y(last[s.val])}" r="4"/>
+    </g>
+    ${zeroLbl}
+    <text class="median-lbl" x="${padL + 6}" y="${y(median) - 5}">median ${s.key === "rep" ? perRep(median) : plain(Math.round(median))}</text>
+    <line class="cross" id="cross-${s.key}" y1="${padT}" y2="${H - padB}" visibility="hidden"/>
+  </svg>`;
+  el.querySelector(".sc-legend").innerHTML = `${s.bench ? `<span><i class="lg-main"></i>Cheapest writ</span><span><i class="lg-bench"></i>Forged Delivery Receipt${benchOn ? "" : benchMed ? `: ${perRep(benchMed)} per rep, above the chart` : ": not priced"}</span><span><i class="lg-median"></i>Median</span>`
+    : `<span><i class="lg-main"></i>Cheapest crate</span><span><i class="lg-median"></i>Median</span>`}`;
+  const svg = plot.querySelector("svg"), cross = $(`#cross-${s.key}`);
+  const fmt = (v) => s.key === "rep" ? perRep(v) : money(v);
+  svg.addEventListener("mousemove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const mx = ((e.clientX - r.left) / r.width) * W;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(x(p.t) - mx) < Math.abs(x(best.t) - mx)) best = p;
+    cross.setAttribute("x1", x(best.t)); cross.setAttribute("x2", x(best.t)); cross.setAttribute("visibility", "visible");
+    showTip(`<b>${berlin.format(new Date(best.t * 1000))}</b>
+      <div class="row"><span>${s.key === "rep" ? "Cheapest writ" : "Cheapest crate"}</span>${fmt(best[s.val])}</div>
+      ${s.bench && best[s.bench] ? `<div class="row"><span>Delivery Receipt</span>${fmt(best[s.bench])}</div>` : ""}
+      ${s.key === "rep" ? `<div class="row"><span>Free-rep writs</span>${count(best.free_writs)}</div>` : ""}`, e);
+  });
+  svg.addEventListener("mouseleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
 }
 
 /* router */

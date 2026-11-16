@@ -220,14 +220,15 @@ func TestSupplyEndpoint(t *testing.T) {
 				Zone string `json:"zone"`
 			} `json:"customer"`
 		} `json:"writs"`
-		ComputedAt int64 `json:"computed_at"`
+		ComputedAt int64             `json:"computed_at"`
+		History    []json.RawMessage `json:"history"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("%d %v", resp.StatusCode, err)
 	}
 	// (10 crate + 10×60 Earthroot) / 5 Favor; 3300 pouch − 500 writ − 2000 Golden Rod.
 	if len(out.Crates) != 1 || out.Crates[0].PerFavor != 122 || len(out.Writs) != 1 || out.Writs[0].Net != 800 ||
-		out.Writs[0].Customer.Zone != "Arathi Highlands" || out.ComputedAt == 0 {
+		out.Writs[0].Customer.Zone != "Arathi Highlands" || out.ComputedAt == 0 || out.History == nil {
 		t.Fatalf("%+v", out)
 	}
 }
