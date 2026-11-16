@@ -31,6 +31,7 @@ type FeedStatus struct {
 // Status is written to /data/status.json after every cycle.
 type Status struct {
 	mu                  sync.Mutex
+	Version             string                 `json:"version,omitempty"` // build that wrote this status
 	UpdatedAt           time.Time              `json:"updated_at"`
 	Feeds               map[string]*FeedStatus `json:"feeds"`
 	LastError           string                 `json:"last_error,omitempty"`

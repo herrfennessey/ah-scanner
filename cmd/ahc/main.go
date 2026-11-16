@@ -20,6 +20,7 @@ import (
 	"github.com/herrfennessey/ah-scanner/internal/report"
 	"github.com/herrfennessey/ah-scanner/internal/rollup"
 	"github.com/herrfennessey/ah-scanner/internal/store"
+	"github.com/herrfennessey/ah-scanner/internal/version"
 	"github.com/herrfennessey/ah-scanner/internal/web"
 )
 
@@ -32,6 +33,7 @@ Collecting:
   ahc rollup [-days N]   recompute daily rows for the last N days (default 3)
   ahc serve              web UI only (reads the database the collector writes)
   ahc health             exit 1 if the collector is stale or failing (Docker healthcheck)
+  ahc version            print the build version
   ahc replay -out x.db   rebuild a database from the raw bodies (last 48 h) with the current rules
 
 Reports (common flags: -house horde|blackwater, -days N, -min-sold N, -csv, -limit N):
@@ -49,6 +51,10 @@ func main() {
 		return
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == "version" || cmd == "-version" || cmd == "--version" {
+		fmt.Println(version.String())
+		return
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, cmd, args); err != nil {
@@ -140,10 +146,13 @@ func run(ctx context.Context, cmd string, args []string) error {
 
 	switch cmd {
 	case "collect", "once":
+		log.Info("ahc starting", "version", version.String(), "cmd", cmd)
 		if err := cfg.RequireCredentials(); err != nil {
 			return err
 		}
-		c := &collector.Collector{Cfg: cfg, Store: st, Log: log, Status: collector.LoadStatus(cfg.StatusPath()),
+		status := collector.LoadStatus(cfg.StatusPath())
+		status.Version = version.String()
+		c := &collector.Collector{Cfg: cfg, Store: st, Log: log, Status: status,
 			API: blizzard.New(cfg.APIBase, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, cfg.Locale, log)}
 		if err := c.Setup(ctx); err != nil {
 			return err
@@ -173,6 +182,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		return err
 	case "serve":
+		fmt.Fprintln(os.Stderr, "ahc", version.String(), "serving")
 		addr := cfg.Listen
 		if addr == "" {
 			addr = ":4653"

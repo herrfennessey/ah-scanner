@@ -591,6 +591,7 @@ async function renderStatus() {
       <h2 class="panel-title">Collector <span class="aside">updated ${ago(Date.parse(s.updated_at) / 1000)}</span></h2>
       <div class="kv"><div><b>Cycles</b><small>successful / total</small></div><div class="val">${count(s.cycles - s.failed_cycles)} / ${count(s.cycles)}</div></div>
       <div class="kv"><div><b>Failed in a row</b><small>alerts after 3</small></div><div class="val ${s.consecutive_failed_cycles ? "error" : ""}">${s.consecutive_failed_cycles}</div></div>
+      <div class="kv"><div><b>Version</b><small>build running the collector</small></div><div class="val">${esc(s.version || "unknown")}</div></div>
       <div class="kv"><div><b>Nightly rollup and backup</b></div><div class="val">${s.last_maintenance ? ago(Date.parse(s.last_maintenance) / 1000) : "not yet"}</div></div>
       ${s.last_error ? `<p class="fine error">Last error: ${esc(s.last_error)}</p>` : ""}
     </section>
