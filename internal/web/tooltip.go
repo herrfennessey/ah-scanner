@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+
+	"github.com/herrfennessey/ah-scanner/internal/report"
 )
 
 // tooltipOut is what the hover tooltip shows: Blizzard's preview_item (every in-game tooltip
@@ -20,6 +22,7 @@ type tooltipOut struct {
 	Min       int64           `json:"min"`
 	Fair      int64           `json:"fair"`
 	Available int64           `json:"available"`
+	Hint      *report.Hint    `json:"hint,omitempty"`
 }
 
 func (s *Server) tooltip(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +61,7 @@ func (s *Server) tooltip(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, row := range rows {
 		if row.ID == id && row.Variant == "" {
-			out.Min, out.Fair, out.Available = row.Min, row.Fair, row.Available
+			out.Min, out.Fair, out.Available, out.Hint = row.Min, row.Fair, row.Available, row.Hint
 			break
 		}
 	}

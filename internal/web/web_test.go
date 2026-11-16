@@ -231,3 +231,33 @@ func TestSupplyEndpoint(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+func TestItemHintWhenPriceStretched(t *testing.T) {
+	srv, st := fixture(t, "")
+	ctx := context.Background()
+	st.SetItem(ctx, store.Item{ID: 13068, Name: "Obsidian Greaves", Quality: 2})
+	// Usual: ~5g with 6 listed and 4 sales a day (yesterday's rollup).
+	day := time.Now().AddDate(0, 0, -1).In(rollup.Berlin).Format("2006-01-02")
+	if _, err := st.DB.Exec(`INSERT INTO item_daily (house_id,item_id,variant,day,fair_unit,min_unit,avg_listed,sold_est,sold_lo,sold_hi,ended,sales,largest_sale)
+		VALUES (113,13068,'',?,50000,48000,6,4,4,5,5,4,1)`, day); err != nil {
+		t.Fatal(err)
+	}
+	var l []listing.Listing
+	for i := int64(0); i < 22; i++ {
+		l = append(l, listing.Listing{AuctionID: 500 + i, ItemID: 13068, Quantity: 1, UnitPrice: 100000, TimeLeft: listing.VeryLong})
+	}
+	l = append(l, listing.Listing{AuctionID: 1, ItemID: 7069, Quantity: 4, UnitPrice: 2289, TimeLeft: listing.Long})
+	st.ApplySnapshot(ctx, store.Snapshot{HouseID: 113, Kind: listing.Gear, FetchedAt: time.Now().Unix(), SHA256: "g"}, l)
+	resp, err := http.Get(srv.URL + "/api/item/13068?house=horde")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Item ItemRow `json:"item"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if h := out.Item.Hint; h == nil || h.Kind != "sell" || h.Ratio != 2 || !h.Piling {
+		t.Fatalf("%+v", out.Item)
+	}
+}

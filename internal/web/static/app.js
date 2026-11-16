@@ -84,6 +84,23 @@ function showTip(html, ev) {
 }
 const hideTip = () => { tip.hidden = true; tip.classList.remove("item-tip"); };
 
+/* market hint: hold or chase (odds from a backtest, see internal/report/hint.go) */
+function hintCopy(h) {
+  if (!h) return null;
+  const x = `${h.ratio.toFixed(h.ratio >= 10 ? 0 : 1)}×`;
+  switch (h.kind) {
+    case "sell": return { label: "Sell now", short: `${x} its usual price`,
+      body: `Priced ${x} its usual level${h.piling ? ", and listings are piling up" : ""}. ${pct(h.odds)} of the time a price this stretched fell 10% or more within 12 hours. List at the cheapest price now, or undercut quickly.` };
+    case "chase": return { label: "Chase it", short: "falling, listings piling up",
+      body: `The price is dropping while listings pile up. ${pct(h.odds)} of the time it fell another 10% or more within 12 hours. Undercut quickly, or sell now.` };
+    case "hold": return { label: "Hold", short: "steady at its usual price",
+      body: `Steady at its usual price. ${pct(h.odds)} of the time it stayed within 10% over the next 12 hours. Post once at the cheapest price and check back later; reposting buys little.` };
+    case "slow": return { label: "Slow", short: h.clear_days ? `~${num(h.clear_days)} days to sell what's listed` : "no recent sales",
+      body: `${h.clear_days ? `What's listed would take about ${num(h.clear_days)} days to sell at the recent rate.` : "No certain sales recently, with stock listed."} Each cancel loses a deposit: post once, or skip it.` };
+  }
+  return null;
+}
+
 /* item tooltips: Blizzard's preview_item rendered like the in-game tooltip */
 const QUALITY_TYPES = ["POOR", "COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY"];
 const qualityOf = (q) => Math.max(0, QUALITY_TYPES.indexOf(q?.type));
@@ -125,10 +142,12 @@ function renderItemTip(t) {
   }
   html += coins(p.sell_price);
   if (!t.preview) html += `<div class="tl tl-flavor">Details appear after the collector looks this item up.</div>`;
+  const hint = hintCopy(t.hint);
   html += `<div class="tip-foot"><div class="tip-foot-title">In the ${esc(factionName(t.house))} auction house</div>
     <div class="row"><span>Buyout</span>${money(t.min)}</div>
     <div class="row"><span>Market value</span>${money(t.fair)}</div>
-    <div class="tip-avail">${t.available ? `${count(t.available)} available` : "None listed now"}</div></div>`;
+    <div class="tip-avail">${t.available ? `${count(t.available)} available` : "None listed now"}</div>${
+      hint ? `<div class="tip-hint hint-${esc(t.hint.kind)}"><b>${hint.label}</b> · ${esc(hint.short)}</div>` : ""}</div>`;
   return html;
 }
 const itemTips = new Map(); // key → { at, p }: prices change every scan, so entries expire
@@ -329,7 +348,7 @@ async function renderItem(id, variant) {
     view.innerHTML = `<a class="back" href="#/browse">← Back to the auction house</a>` + `<div class="panel">${emptyState("Item not found", esc(err.message))}</div>`;
     return;
   }
-  const it = item.item, h = item.house;
+  const it = item.item, h = item.house, hint = hintCopy(it.hint);
   if (state.classes) renderBrowse();
   else api(`/api/items?house=${state.house}&limit=1`).then((d) => renderBrowse(d.classes, d.all_count)).catch(() => {});
   const sub = [`<span class="q${it.quality}">${QUALITY[it.quality] || ""}</span>`, it.ilvl ? `Item level <b>${it.ilvl}</b>` : "",
@@ -341,6 +360,7 @@ async function renderItem(id, variant) {
       <div><h2 class="q${it.quality}">${esc(it.name)}${it.variant ? ` <small class="item-sub">${esc(it.variant)}</small>` : ""}</h2><div class="meta">${sub.join("<span aria-hidden='true'>◆</span>")}</div></div>
       <div class="best"><small>Lowest buyout · ${factionName(h.faction)}</small>${money(it.min, { zero: "Not listed" })}</div>
     </section>
+    ${hint ? `<div class="hint-bar hint-${esc(it.hint.kind)}" role="note"><b>${hint.label}</b><span>${esc(hint.body)}</span></div>` : ""}
     <dl class="stats">
       <div class="stat"><dt>Lowest buyout</dt><dd>${money(it.min, { zero: "Not listed" })}<span class="note">${factionName(h.faction)} auction house</span></dd></div>
       <div class="stat"><dt>Market value</dt><dd>${money(it.fair)}<span class="note">cheapest 20% of units, 7-day median</span></dd></div>
