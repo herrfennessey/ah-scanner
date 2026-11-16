@@ -32,10 +32,13 @@ func (c *Collector) RefreshSupply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Older order books can't be rebuilt: closed auctions are deleted after the retention.
-	floor := start.Unix() - int64(c.Cfg.AuctionRetentionDays)*86400
 	// Redo the last hour too: a scan's gear and commodity halves can land in separate batches.
-	since := max(last-3600, floor)
+	since := max(last-3600, 0)
+	// Older order books can't be rebuilt: closed auctions are deleted after the retention
+	// (0 keeps them forever).
+	if days := c.Cfg.AuctionRetentionDays; days > 0 {
+		since = max(since, start.Unix()-int64(days)*86400)
+	}
 	times, err := supply.ScanTimes(ctx, c.Store.DB, house, since)
 	if err != nil {
 		return fmt.Errorf("supply scans: %w", err)

@@ -75,7 +75,8 @@ func Pouch(overrides map[string]int64) map[string]int64 {
 	return p
 }
 
-// auc is one listing's life on the house, for rebuilding the order book at any scan.
+// auc is one listing's life on the house, for rebuilding the order book at any scan. qty is its
+// last seen quantity; partials are the units bought from it, by time.
 type auc struct {
 	item, price, qty int64
 	opened, closed   int64 // closed 0 = still open
@@ -213,7 +214,7 @@ func (s *Source) loadAuctions(ctx context.Context, db *sql.DB, houseID, since in
 		ids = append(ids, fmt.Sprint(id))
 	}
 	in := strings.Join(ids, ",") // integers only: safe to inline
-	rows, err := db.QueryContext(ctx, `SELECT kind, auction_id, item_id, unit_price, qty_first, first_seen, COALESCE(closed_at,0)
+	rows, err := db.QueryContext(ctx, `SELECT kind, auction_id, item_id, unit_price, qty_last, first_seen, COALESCE(closed_at,0)
 		FROM auction WHERE house_id=? AND variant='' AND unit_price > 0 AND item_id IN (`+in+`)
 		AND (closed_at IS NULL OR closed_at > ?)`, houseID, since)
 	if err != nil {
@@ -259,7 +260,9 @@ func (s *Source) loadAuctions(ctx context.Context, db *sql.DB, houseID, since in
 }
 
 // At returns the planner inputs for the order book as it stood at scan time t: listings seen by
-// then and not yet gone, less any units bought from them by then.
+// then and not yet gone, with their last seen quantity plus any units bought from them after t.
+// Counting back from the end needs only sales after t, which retention keeps for any listing
+// still open or closed after the retention cutoff (it may have pruned earlier ones).
 func (s *Source) At(t int64) Inputs {
 	type lv struct{ item, price int64 }
 	qty := map[lv]int64{}
@@ -269,8 +272,8 @@ func (s *Source) At(t int64) Inputs {
 		}
 		q := a.qty
 		for _, e := range a.partials {
-			if e.ts <= t {
-				q -= e.units
+			if e.ts > t {
+				q += e.units
 			}
 		}
 		if q > 0 {
