@@ -183,6 +183,10 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIc
 		}
 		lastErr = fmt.Errorf("item %d: no name in %s", id, ns)
 	}
+	if IsNotFound(lastErr) {
+		// Gone from the API: record "no tooltip" so it isn't fetched again every cycle.
+		return store.Item{ID: id, Tooltip: json.RawMessage("null")}, lastErr
+	}
 	return store.Item{ID: id}, lastErr
 }
 

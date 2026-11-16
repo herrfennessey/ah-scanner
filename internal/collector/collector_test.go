@@ -2,6 +2,7 @@ package collector
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -79,5 +80,12 @@ func TestUndeliveredAlertIsRetried(t *testing.T) {
 	s.UndoAlert() // delivery failed
 	if m := s.AlertMessage(3, 3*time.Hour, time.Now()); m == "" {
 		t.Fatal("undelivered alert must be sent again")
+	}
+}
+
+func TestPrependUnique(t *testing.T) {
+	got := prependUnique([]int64{9, 2}, []int64{1, 2, 3}, 3)
+	if !reflect.DeepEqual(got, []int64{9, 2, 1}) {
+		t.Fatalf("%v", got)
 	}
 }

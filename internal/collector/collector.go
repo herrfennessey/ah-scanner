@@ -310,6 +310,10 @@ func (c *Collector) lookupItems(ctx context.Context) {
 		c.Log.Warn("item lookup query", "err", err)
 		return
 	}
+	// Crates first: the Supply tab reads their fill lists from the tooltip.
+	if first, err := c.Store.MissingTooltips(ctx, supply.CrateIDs); err == nil && len(first) > 0 {
+		ids = prependUnique(first, ids, c.Cfg.ItemLookupsPerCycle)
+	}
 	haveIcon, err := c.Store.HaveIcons(ctx)
 	if err != nil {
 		c.Log.Warn("item icon query", "err", err)
@@ -343,6 +347,19 @@ func (c *Collector) lookupItems(ctx context.Context) {
 	if len(ids) > 0 {
 		c.Log.Info("item names", "looked_up", len(ids), "found", found.Load())
 	}
+}
+
+// prependUnique puts first ahead of rest, without duplicates, capped at limit.
+func prependUnique(first, rest []int64, limit int) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, id := range append(append([]int64{}, first...), rest...) {
+		if !seen[id] && len(out) < limit {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // lookupWritQuests fetches, once, the reputation each Craftsman's Writ's daily quest pays.
