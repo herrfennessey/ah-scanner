@@ -59,6 +59,13 @@ func (h House) DepositMult() float64 {
 	return 1
 }
 
+// Supply tunes the Durotar Supply and Logistics planner.
+type Supply struct {
+	// CoinPouch overrides the copper a Craftsman's Writ's Coin Pouch is assumed to hold, by tier
+	// (journeyman, expert, artisan). The API doesn't say; defaults are guide estimates.
+	CoinPouch map[string]int64 `yaml:"coin_pouch"`
+}
+
 type Alert struct {
 	URL       string `yaml:"url"`        // ntfy topic URL or Home Assistant webhook; POSTed a plain-text message
 	AfterFail int    `yaml:"after_fail"` // consecutive failed cycles before alerting (default 3)
@@ -117,6 +124,8 @@ type Config struct {
 	DepositRate float64 `yaml:"deposit_rate"`
 
 	Alert Alert `yaml:"alert"`
+
+	Supply Supply `yaml:"supply"`
 
 	Listen string `yaml:"listen"` // address for the web UI and /mcp, e.g. ":4653"; empty = neither
 

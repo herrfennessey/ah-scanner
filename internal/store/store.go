@@ -615,3 +615,30 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
 }
+
+// SetWritRep records the reputation a writ's quest pays.
+func (s *Store) SetWritRep(ctx context.Context, itemID, questID int64, rep int) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO writ_quest (item_id, quest_id, rep, fetched_at) VALUES (?,?,?,?)
+		ON CONFLICT(item_id) DO UPDATE SET quest_id=excluded.quest_id, rep=excluded.rep, fetched_at=excluded.fetched_at`,
+		itemID, questID, rep, time.Now().Unix())
+	return err
+}
+
+// WritReps returns writ item id → quest reputation for every writ fetched so far.
+func (s *Store) WritReps(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT item_id, rep FROM writ_quest`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var rep int
+		if err := rows.Scan(&id, &rep); err != nil {
+			return nil, err
+		}
+		m[id] = rep
+	}
+	return m, rows.Err()
+}

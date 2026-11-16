@@ -3,6 +3,7 @@ package blizzard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -199,4 +200,35 @@ func (c *Client) itemIcon(ctx context.Context, ns string, id int64) string {
 		}
 	}
 	return ""
+}
+
+// ErrNoReputation means a quest exists but awards no reputation with the faction asked about.
+var ErrNoReputation = errors.New("no reputation with that faction")
+
+// Quest returns the reputation a quest awards with one faction, trying each static namespace.
+func (c *Client) Quest(ctx context.Context, id int64, namespaces []string, factionID int64) (int, error) {
+	var lastErr error
+	for _, ns := range namespaces {
+		var raw struct {
+			Rewards struct {
+				Reputations []struct {
+					Reward struct {
+						ID int64 `json:"id"`
+					} `json:"reward"`
+					Value int `json:"value"`
+				} `json:"reputations"`
+			} `json:"rewards"`
+		}
+		if err := c.GetJSON(ctx, "/data/wow/quest/"+strconv.FormatInt(id, 10), url.Values{"namespace": {ns}}, &raw); err != nil {
+			lastErr = err
+			continue
+		}
+		for _, r := range raw.Rewards.Reputations {
+			if r.Reward.ID == factionID {
+				return r.Value, nil
+			}
+		}
+		return 0, fmt.Errorf("quest %d, faction %d: %w", id, factionID, ErrNoReputation)
+	}
+	return 0, lastErr
 }

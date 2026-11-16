@@ -180,3 +180,15 @@ func TestHaveIcons(t *testing.T) {
 		t.Fatalf("%v %v", got, err)
 	}
 }
+
+func TestWritRepRoundTrip(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	if err := st.SetWritRep(ctx, 264021, 94221, 75); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.WritReps(ctx)
+	if err != nil || got[264021] != 75 || len(got) != 1 {
+		t.Fatalf("%v %v", got, err)
+	}
+}

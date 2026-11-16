@@ -243,3 +243,17 @@ func TestItemKeepsPreviewAndSkipsKnownIcon(t *testing.T) {
 		t.Fatalf("icon %q media %d", it.Icon, media.Load())
 	}
 }
+
+func TestQuestRep(t *testing.T) {
+	_, c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request, _ int32) {
+		if !strings.HasSuffix(r.URL.Path, "/data/wow/quest/94221") {
+			w.WriteHeader(404)
+			return
+		}
+		io.WriteString(w, `{"id":94221,"rewards":{"reputations":[{"reward":{"name":"Azeroth Commerce Authority","id":2586},"value":75},{"reward":{"name":"Durotar Supply and Logistics","id":2587},"value":75}]},"is_daily":true}`)
+	})
+	rep, err := c.Quest(context.Background(), 94221, []string{"static-forever-eu"}, 2587)
+	if err != nil || rep != 75 {
+		t.Fatalf("rep %d err %v", rep, err)
+	}
+}
