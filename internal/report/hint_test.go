@@ -42,6 +42,10 @@ func TestHintSlowWhenStockOutlastsSales(t *testing.T) {
 	if h := MarketHint("horde", HintInput{P20: 9300, PrevP20: 9300, Listed: 10, Fair: 9300, UsualListed: 10}); h == nil || h.Kind != "slow" {
 		t.Fatalf("no sales: %+v", h)
 	}
+	// A price-only house has no sales data: never call it slow.
+	if h := MarketHint("alliance", HintInput{P20: 9300, PrevP20: 9500, Listed: 28, Fair: 9500, UsualListed: 25, Untracked: true}); h != nil && h.Kind == "slow" {
+		t.Fatalf("untracked: %+v", h)
+	}
 }
 
 func TestHintStretchedBeatsSlow(t *testing.T) {
