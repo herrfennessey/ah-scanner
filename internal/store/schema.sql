@@ -56,3 +56,9 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
 -- reputation each Craftsman's Writ's daily quest pays (quest API), fetched once per writ.
 CREATE TABLE IF NOT EXISTS writ_quest (item_id INTEGER PRIMARY KEY, quest_id INT, rep INT, fetched_at INT);
+
+-- Supply page data, recomputed after each Horde publish (single row)
+CREATE TABLE IF NOT EXISTS supply_cache (id INTEGER PRIMARY KEY CHECK (id = 1), computed_at INT, data BLOB);
+
+-- best price of each Supply route at every scan, for the Supply charts (one JSON point per scan)
+CREATE TABLE IF NOT EXISTS supply_history (house_id INT, ts INT, data TEXT, PRIMARY KEY (house_id, ts));

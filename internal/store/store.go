@@ -663,3 +663,70 @@ func (s *Store) WritReps(ctx context.Context) (map[int64]int, error) {
 	}
 	return m, rows.Err()
 }
+
+// SaveSupplyCache stores the precomputed Supply page (opaque bytes to the store).
+func (s *Store) SaveSupplyCache(ctx context.Context, computedAt int64, data []byte) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO supply_cache (id, computed_at, data) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET computed_at=excluded.computed_at, data=excluded.data`, computedAt, data)
+	return err
+}
+
+// LoadSupplyCache returns the stored Supply page, or nil if none.
+func (s *Store) LoadSupplyCache(ctx context.Context) (int64, []byte, error) {
+	var t int64
+	var b []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT computed_at, data FROM supply_cache WHERE id=1`).Scan(&t, &b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, nil
+	}
+	return t, b, err
+}
+
+// LastSupplyPoint returns the time of a house's newest Supply chart point (0 if none).
+func (s *Store) LastSupplyPoint(ctx context.Context, houseID int64) (int64, error) {
+	var t int64
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(ts),0) FROM supply_history WHERE house_id=?`, houseID).Scan(&t)
+	return t, err
+}
+
+// ReplaceSupplyPoints deletes a house's chart points after since and stores points (ts → JSON)
+// in one transaction.
+func (s *Store) ReplaceSupplyPoints(ctx context.Context, houseID, since int64, points map[int64][]byte) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM supply_history WHERE house_id=? AND ts > ?`, houseID, since); err != nil {
+		return err
+	}
+	ins, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO supply_history (house_id, ts, data) VALUES (?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer ins.Close()
+	for t, b := range points {
+		if _, err := ins.ExecContext(ctx, houseID, t, string(b)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SupplyPoints returns a house's chart points since since, oldest first, as raw JSON.
+func (s *Store) SupplyPoints(ctx context.Context, houseID, since int64) ([]json.RawMessage, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT data FROM supply_history WHERE house_id=? AND ts >= ? ORDER BY ts`, houseID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []json.RawMessage{}
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, json.RawMessage(d))
+	}
+	return out, rows.Err()
+}
