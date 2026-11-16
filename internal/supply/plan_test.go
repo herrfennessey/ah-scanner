@@ -1,8 +1,10 @@
 package supply
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -246,5 +248,14 @@ func TestWritKeepsAPIRepOutsideTiers(t *testing.T) {
 	r := Plan(writInputs(p, map[int64]string{264062: "Craftsman's Writ: Mana Potion"}, map[int64]int{264062: 150}))
 	if w := r.Writs[0]; w.Rep != 150 || w.Tier != "Expert" {
 		t.Fatalf("API rep must win, dataset tier still used: %+v", w)
+	}
+}
+
+func TestCrateWithoutFillSerializesEmptyOptions(t *testing.T) {
+	p := prices(map[int64]item{248682: {"Waylaid Crate: Apprentice Herbs", []Level{{10, 1}}}})
+	r := Plan(Inputs{Prices: p, Names: map[int64]string{248682: "Waylaid Crate: Apprentice Herbs"}})
+	b, _ := json.Marshal(r.Crates[0])
+	if !strings.Contains(string(b), `"options":[]`) {
+		t.Fatalf("a crate whose tooltip isn't stored yet must send an empty list, got %s", b)
 	}
 }

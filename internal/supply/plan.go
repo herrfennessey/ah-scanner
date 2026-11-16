@@ -222,7 +222,7 @@ func Plan(in Inputs) Result {
 }
 
 func planCrate(in Inputs, id int64, name string) Crate {
-	c := Crate{ID: id, Name: name, Favor: CrateFavor(name)}
+	c := Crate{ID: id, Name: name, Favor: CrateFavor(name), Options: []FillCost{}} // [] not null in JSON
 	cost, ok := BuyCost(in.Prices.Book(id), 1)
 	if ok {
 		c.CrateCost = cost

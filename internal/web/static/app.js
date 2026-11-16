@@ -820,7 +820,7 @@ async function renderSupply() {
 
   const crateRows = crates.map((c) => {
     const ranked = c.per_favor > 0;
-    const alts = c.options.filter((o) => !(c.best && o.item_id === c.best.item_id && o.qty === c.best.qty));
+    const alts = (c.options || []).filter((o) => !(c.best && o.item_id === c.best.item_id && o.qty === c.best.qty));
     return `<tr class="${ranked ? "" : "muted-row"}">
       <td>${supplyItem(items, c.id, c.note ? `<span class="sub-num">${esc(c.note)}</span>` : "")}</td>
       <td data-label="Favor">${c.favor || "?"}</td>
