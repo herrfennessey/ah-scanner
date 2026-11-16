@@ -48,6 +48,13 @@ above market value, nor on Blackwater above the dearer of the Horde and Alliance
   and zone; filter by world, continent or zone, with a per-zone summary. The Forged Delivery
   Receipt (15 Favor + an empty crate → 50 rep) is shown as a benchmark, and sealed writs are
   valued at their tier's average order.
+- **Is now a good time?** Two charts over the last 2, 7 or 30 days: the cheapest crate's gold
+  per Favor and the cheapest writ's gold per rep (with the Delivery Receipt), one point per
+  Horde scan. Each says where now sits against the period (good when cheaper than 75% of it).
+  The first run backfills the charts by rebuilding each past scan's order book from the auction
+  history (as far back as `auction_retention_days`).
+- The page is computed once after each Horde scan (`supply_cache`, `supply_history`), not per
+  request.
 - Coin pouch amounts and customers come from community guides (sources in
   `internal/supply/data.go`); override the pouch in `config.yaml` under `supply.coin_pouch`.
 

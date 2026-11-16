@@ -19,8 +19,9 @@ func (c *Collector) FlipHouses() []report.FlipHouse {
 	return out
 }
 
-// RefreshAfterPublish brings today's daily rows up to date and precomputes the flip inputs, so
-// the Flips page and MCP answer instantly from fresh data. Runs after every batch with new data.
+// RefreshAfterPublish brings today's daily rows up to date and precomputes the flip inputs and
+// the Supply page, so the pages and MCP answer instantly from fresh data. Runs after every batch
+// with new data.
 func (c *Collector) RefreshAfterPublish(ctx context.Context) error {
 	start := time.Now()
 	local := start.In(rollup.Berlin)
@@ -39,7 +40,7 @@ func (c *Collector) RefreshAfterPublish(ctx context.Context) error {
 		return fmt.Errorf("flip cache: %w", err)
 	}
 	c.Log.Info("flips refreshed", "items", len(in.Items), "bytes", len(b), "took", time.Since(start).Round(time.Millisecond))
-	return nil
+	return c.RefreshSupply(ctx)
 }
 
 // refresh runs RefreshAfterPublish from the collect loops, where a failure is only logged.

@@ -433,3 +433,28 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 .hint-slow { border-left-color: var(--dim); } .hint-slow b { color: var(--text); }
 .item-tip .tip-hint { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
 @media (max-width: 700px) { .hint-bar { flex-direction: column; gap: 4px; } }
+
+/* supply charts */
+.supply-charts-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.supply-charts-head .supply-h { margin: 4px 0; }
+.supply-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 10px 0 8px; }
+.sc-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-raise); padding: 12px 14px 8px; min-width: 0; }
+.sc-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.sc-title { font: 600 14px var(--display); color: var(--gold-hi); letter-spacing: .04em; }
+.sc-now { text-align: right; flex: none; }
+.sc-val { font-size: 18px; font-weight: 600; }
+.sc-verdict { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.sc-verdict.good { color: #7fd88a; }
+.sc-verdict.bad { color: var(--up); }
+.sc-chart { margin-top: 8px; }
+.chart.sc-plot { height: 200px; }
+.chart .median { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 4; }
+.chart .median-lbl, .chart .zero-lbl { fill: var(--muted); font-size: 10.5px; paint-order: stroke; stroke: var(--bg-raise); stroke-width: 4px; stroke-linejoin: round; }
+.chart .bench { fill: none; stroke: var(--down); stroke-width: 1.4; opacity: .8; }
+.chart .zero { stroke: #7fd88a; stroke-opacity: .45; }
+.chart .now-dot { fill: var(--gold-hi); stroke: var(--bg); stroke-width: 2; }
+.sc-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+.sc-legend i { display: inline-block; width: 14px; height: 0; vertical-align: middle; margin-right: 5px; border-top: 2px solid var(--gold-hi); }
+.sc-legend i.lg-bench { border-top-color: var(--down); }
+.sc-legend i.lg-median { border-top: 1px dashed var(--muted); }
+@media (max-width: 900px) { .supply-charts { grid-template-columns: minmax(0, 1fr); } }
