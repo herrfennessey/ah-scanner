@@ -960,15 +960,16 @@ function supplyCharts(history) {
 }
 // Signed short money for axes: "1.2g", "−35c".
 const shortSigned = (c) => (c < 0 ? "−" : "") + shortGold(Math.abs(c));
-// Where the latest value sits among the range: the share of scans that were dearer. 75%+ is a
-// good time to buy, 25% or less a poor one.
+// Where the latest value sits among the range. Scans at the same price count as neither cheaper
+// nor dearer: good when 75%+ of the period was dearer, pricey when 75%+ was cheaper.
 function supplyVerdict(vals, now) {
   if (vals.length < 6) return { cls: "", text: "Not enough history yet to judge" };
-  const dearer = vals.filter((v) => v > now).length / vals.length;
-  const pct = Math.round(dearer * 100);
-  if (dearer >= 0.75) return { cls: "good", text: `Good time: cheaper than ${pct}% of the period` };
-  if (dearer <= 0.25) return { cls: "bad", text: `Pricey: dearer than ${100 - pct}% of the period` };
-  return { cls: "", text: `Typical: cheaper than ${pct}% of the period` };
+  const dearer = Math.round((vals.filter((v) => v > now).length / vals.length) * 100);
+  const cheaper = Math.round((vals.filter((v) => v < now).length / vals.length) * 100);
+  if (dearer >= 75) return { cls: "good", text: `Good time: cheaper than ${dearer}% of the period` };
+  if (cheaper >= 75) return { cls: "bad", text: `Pricey: dearer than ${cheaper}% of the period` };
+  if (dearer === 0 && cheaper === 0) return { cls: "", text: "Typical: the same all period" };
+  return { cls: "", text: `Typical: cheaper than ${dearer}%, dearer than ${cheaper}% of the period` };
 }
 function supplyChart(s, all, range) {
   const el = $(`#sc-${s.key}`), nowEl = $(`#sc-now-${s.key}`);

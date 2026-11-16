@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -183,11 +184,14 @@ func (s *Source) loadFills(ctx context.Context, db *sql.DB) error {
 	for _, id := range CrateIDs {
 		var tt sql.NullString
 		err := db.QueryRowContext(ctx, `SELECT tooltip FROM item WHERE id=?`, id).Scan(&tt)
-		if err == sql.ErrNoRows || !tt.Valid {
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("crate tooltip: %w", err)
+		}
+		if !tt.Valid {
+			continue
 		}
 		var p struct {
 			Spells []struct {
@@ -240,8 +244,9 @@ func (s *Source) loadAuctions(ctx context.Context, db *sql.DB, houseID, since in
 		return err
 	}
 
+	// At(t) only adds back sales after t, and every t is after since.
 	ev, err := db.QueryContext(ctx, `SELECT kind, auction_id, ts, units FROM sale_event
-		WHERE house_id=? AND outcome='partial' AND item_id IN (`+in+`)`, houseID)
+		WHERE house_id=? AND outcome='partial' AND ts > ? AND item_id IN (`+in+`)`, houseID, since)
 	if err != nil {
 		return fmt.Errorf("partial sales: %w", err)
 	}
@@ -291,8 +296,11 @@ func (s *Source) At(t int64) Inputs {
 }
 
 // ViewAt prices the plan at scan time t with the display data the page needs.
-func (s *Source) ViewAt(t int64) *View {
-	v := &View{Result: Plan(s.At(t)), Items: map[int64]ItemInfo{}, Pouch: s.pouch, ComputedAt: t}
+func (s *Source) ViewAt(t int64) *View { return s.ViewOf(t, Plan(s.At(t))) }
+
+// ViewOf adds the display data the page needs to a plan already priced at scan time t.
+func (s *Source) ViewOf(t int64, r Result) *View {
+	v := &View{Result: r, Items: map[int64]ItemInfo{}, Pouch: s.pouch, ComputedAt: t}
 	add := func(id int64) {
 		if m, ok := s.meta[id]; ok && id != 0 {
 			v.Items[id] = m

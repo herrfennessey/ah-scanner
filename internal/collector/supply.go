@@ -51,8 +51,10 @@ func (c *Collector) RefreshSupply(ctx context.Context) error {
 		return fmt.Errorf("supply: %w", err)
 	}
 	points := map[int64][]byte{}
+	var plan supply.Result
 	for _, t := range times {
-		b, err := json.Marshal(supply.PointOf(t, supply.Plan(src.At(t))))
+		plan = supply.Plan(src.At(t))
+		b, err := json.Marshal(supply.PointOf(t, plan))
 		if err != nil {
 			return err
 		}
@@ -62,7 +64,7 @@ func (c *Collector) RefreshSupply(ctx context.Context) error {
 		return fmt.Errorf("supply points: %w", err)
 	}
 	now := times[len(times)-1]
-	b, err := json.Marshal(src.ViewAt(now))
+	b, err := json.Marshal(src.ViewOf(now, plan)) // plan is the last scan's
 	if err != nil {
 		return err
 	}
