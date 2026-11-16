@@ -141,7 +141,7 @@ type Writ struct {
 	OK        bool     `json:"ok"`      // writ and item both buyable
 	Customer  Customer `json:"customer"`
 	Continent string   `json:"continent"`
-	itemOK    bool     // enough of the requested item listed
+	ItemOK    bool     `json:"item_ok"` // enough of the requested item listed (ItemCost is partial otherwise)
 }
 
 // Inputs is everything the planner needs.
@@ -276,7 +276,7 @@ func planWrit(in Inputs, id int64, name string) Writ {
 		w.ItemID = iid
 		w.ItemCost, itemOK = BuyCost(in.Prices.Book(iid), w.Qty)
 	}
-	w.itemOK = itemOK
+	w.ItemOK = itemOK
 	w.OK = writOK && itemOK
 	w.Net = w.Pouch - w.WritCost - w.ItemCost
 	if w.Rep > 0 {
@@ -292,7 +292,7 @@ func planSealed(in Inputs, id int64, name, tier string, writs []Writ) Writ {
 	w.WritCost = cost
 	var sum, n int64
 	for _, o := range writs {
-		if o.Tier == tier && o.itemOK {
+		if o.Tier == tier && o.ItemOK {
 			sum += o.ItemCost
 			n++
 		}

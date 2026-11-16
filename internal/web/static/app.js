@@ -132,7 +132,8 @@ function renderItemTip(t) {
   return html;
 }
 const itemTips = new Map();
-let tipFor = null;
+let tipFor = null, tipShown = null; // requested vs. actually showing
+const touchOnly = () => matchMedia("(hover: none)").matches;
 async function itemTip(el, ev) {
   const id = el.dataset.tipItem;
   tipFor = el;
@@ -144,19 +145,23 @@ async function itemTip(el, ev) {
   const r = el.getBoundingClientRect();
   tip.classList.add("item-tip"); // before showTip, so it is measured at its final width
   showTip(renderItemTip(t), ev?.clientX != null ? ev : { clientX: r.right, clientY: r.top });
+  tipShown = el;
 }
-function endItemTip() { tipFor = null; hideTip(); }
-document.addEventListener("mouseover", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el) itemTip(el, e); });
-document.addEventListener("mouseout", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !el.contains(e.relatedTarget)) endItemTip(); });
-document.addEventListener("focusin", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el) itemTip(el); });
-document.addEventListener("focusout", (e) => { if (e.target.closest?.("[data-tip-item]")) endItemTip(); });
+function endItemTip() { tipFor = tipShown = null; hideTip(); }
+// Touch screens fire compat mouseover/focus before the click; only the click counts there.
+document.addEventListener("mouseover", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !touchOnly()) itemTip(el, e); });
+document.addEventListener("mouseout", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !touchOnly() && !el.contains(e.relatedTarget)) endItemTip(); });
+document.addEventListener("focusin", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !touchOnly()) itemTip(el); });
+document.addEventListener("focusout", (e) => { if (e.target.closest?.("[data-tip-item]") && !touchOnly()) endItemTip(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && tipFor) endItemTip(); });
-// Touch: a tap on an icon toggles its tooltip instead of following the row's link.
+// Touch: a tap on an icon toggles its tooltip instead of following the row's link; a tap
+// anywhere else closes it.
 document.addEventListener("click", (e) => {
+  if (!touchOnly()) return;
   const el = e.target.closest?.("[data-tip-item]");
-  if (!el || !matchMedia("(hover: none)").matches) return;
+  if (!el) { if (tipShown) endItemTip(); return; }
   e.preventDefault(); e.stopPropagation();
-  if (tipFor === el) endItemTip(); else itemTip(el, e);
+  if (tipShown === el || tipFor === el) endItemTip(); else itemTip(el, e);
 }, true);
 
 /* houses + hero */
@@ -870,7 +875,7 @@ async function renderSupply() {
           const c = w.customer;
           return `<tr class="${w.ok ? "" : "muted-row"}">
             <td>${w.ok && w.net >= 0 ? `<span class="tag tag-new">Free rep</span>` : ""}${supplyItem(items, w.id, `<span class="sub-num">${esc(w.tier || "Tier unknown")}</span>`)}</td>
-            <td data-label="Asks for">${w.item_id ? supplyItem(items, w.item_id, `<span class="sub-num">${w.qty > 1 ? `${count(w.qty)} × ` : ""}${w.ok || w.item_cost ? money(w.item_cost) : "not enough listed"}</span>`) : `${esc(w.item)}<span class="sub-num">not seen on the AH</span>`}</td>
+            <td data-label="Asks for">${w.item_id ? supplyItem(items, w.item_id, `<span class="sub-num">${w.qty > 1 ? `${count(w.qty)} × ` : ""}${w.item_ok ? money(w.item_cost) : "not enough on the AH"}</span>`) : `${esc(w.item)}<span class="sub-num">not seen on the AH</span>`}</td>
             <td data-label="Writ">${w.writ_cost ? money(w.writ_cost) : `<span class="none">not listed</span>`}</td>
             <td data-label="Coin pouch">${money(w.pouch)}</td>
             <td data-label="Net" class="${w.ok && w.net >= 0 ? "pos" : ""}">${w.ok ? money(w.net, { zero: "0" }) : "—"}</td>

@@ -130,6 +130,9 @@ func TestWritNotEnoughOnAH(t *testing.T) {
 		if w.OK {
 			t.Fatalf("no writ is coverable: %+v", w)
 		}
+		if w.ID == 264037 && w.ItemOK {
+			t.Fatalf("50 of 200 Solid Shot listed must not count as buyable: %+v", w)
+		}
 	}
 }
 

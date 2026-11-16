@@ -295,7 +295,8 @@ func (s *Store) ItemsNeedingNames(ctx context.Context, limit int, retryAfter tim
 			SELECT item_id FROM auction WHERE closed_at IS NULL
 			UNION SELECT item_id FROM item_snapshot WHERE snapshot_id IN (SELECT MAX(id) FROM snapshot GROUP BY house_id, kind)
 		) a LEFT JOIN item i ON i.id = a.item_id
-		WHERE (i.id IS NULL OR ((i.name IS NULL OR i.icon IS NULL OR i.tooltip IS NULL OR i.looked_up_at IS NULL) AND COALESCE(i.looked_up_at,0) < ?)) LIMIT ?`, cutoff, limit)
+		WHERE (i.id IS NULL OR ((i.name IS NULL OR i.icon IS NULL OR i.tooltip IS NULL OR i.looked_up_at IS NULL) AND COALESCE(i.looked_up_at,0) < ?))
+		ORDER BY i.id IS NULL DESC, i.name IS NULL DESC, i.icon IS NULL DESC LIMIT ?`, cutoff, limit) // new items before the tooltip backfill
 	if err != nil {
 		return nil, err
 	}

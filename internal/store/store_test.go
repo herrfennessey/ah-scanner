@@ -192,3 +192,21 @@ func TestWritRepRoundTrip(t *testing.T) {
 		t.Fatalf("%v %v", got, err)
 	}
 }
+
+func TestItemsNeedingNamesPutsUnnamedFirst(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	var l []listing.Listing
+	for i := int64(1); i <= 20; i++ {
+		l = append(l, listing.Listing{AuctionID: i, ItemID: i, Quantity: 1, UnitPrice: 10, TimeLeft: listing.Long})
+	}
+	st.ApplySnapshot(ctx, Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: 1, SHA256: "a"}, l)
+	for i := int64(1); i <= 19; i++ { // named and iconed, only the tooltip missing
+		st.SetItem(ctx, Item{ID: i, Name: "Old", Icon: "x.jpg"})
+	}
+	st.DB.Exec(`UPDATE item SET looked_up_at = 0`)
+	ids, err := st.ItemsNeedingNames(ctx, 1, time.Hour)
+	if err != nil || len(ids) != 1 || ids[0] != 20 {
+		t.Fatalf("the never-seen item must come first: %v %v", ids, err)
+	}
+}
