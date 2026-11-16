@@ -1,6 +1,7 @@
 package web
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -32,23 +33,23 @@ func (s *Server) tooltip(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, err)
 		return
 	}
-	meta, err := loadMeta(r.Context(), s.Store.DB)
+	out := tooltipOut{ID: id, House: h.Faction}
+	var tt sql.NullString
+	err = s.Store.DB.QueryRowContext(r.Context(), `SELECT COALESCE(name,''), COALESCE(quality,1), COALESCE(icon,''), tooltip FROM item WHERE id=?`, id).
+		Scan(&out.Name, &out.Quality, &out.Icon, &tt)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, 404, errors.New("this item has not been seen on the auction house"))
+		return
+	}
 	if err != nil {
 		fail(w, 500, err)
 		return
 	}
-	m, ok := meta[id]
-	if !ok {
-		fail(w, 404, errors.New("this item has not been seen on the auction house"))
-		return
+	if tt.Valid {
+		out.Preview = json.RawMessage(tt.String)
 	}
-	out := tooltipOut{ID: id, Name: m.name, Quality: m.quality, Icon: m.icon, House: h.Faction}
 	if out.Name == "" {
 		out.Name = "Item #" + strconv.FormatInt(id, 10)
-	}
-	if out.Preview, err = s.Store.ItemTooltip(r.Context(), id); err != nil {
-		fail(w, 500, err)
-		return
 	}
 	rows, err := s.buildRows(r.Context(), h.ID)
 	if err != nil {

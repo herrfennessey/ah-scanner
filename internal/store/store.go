@@ -376,11 +376,14 @@ func (s *Store) HaveIcons(ctx context.Context) (map[int64]bool, error) {
 func (s *Store) ItemTooltip(ctx context.Context, id int64) (json.RawMessage, error) {
 	var t sql.NullString
 	err := s.DB.QueryRowContext(ctx, `SELECT tooltip FROM item WHERE id=?`, id).Scan(&t)
-	if errors.Is(err, sql.ErrNoRows) || !t.Valid {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if !t.Valid {
+		return nil, nil
 	}
 	return json.RawMessage(t.String), nil
 }

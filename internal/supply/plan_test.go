@@ -237,3 +237,14 @@ func TestReceiptBenchmark(t *testing.T) {
 		t.Fatalf("%+v best %+v", r.Receipt, r.Crates[0])
 	}
 }
+
+func TestWritKeepsAPIRepOutsideTiers(t *testing.T) {
+	p := prices(map[int64]item{
+		264062: {"Craftsman's Writ: Mana Potion", []Level{{100, 1}}},
+		3827:   {"Mana Potion", []Level{{100, 1}}},
+	})
+	r := Plan(writInputs(p, map[int64]string{264062: "Craftsman's Writ: Mana Potion"}, map[int64]int{264062: 150}))
+	if w := r.Writs[0]; w.Rep != 150 || w.Tier != "Expert" {
+		t.Fatalf("API rep must win, dataset tier still used: %+v", w)
+	}
+}

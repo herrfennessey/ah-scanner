@@ -173,6 +173,9 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIc
 			it.Quality = q
 		}
 		if it.Name != "" {
+			if len(it.Tooltip) == 0 {
+				it.Tooltip = json.RawMessage("null") // no tooltip in the API: stored so it isn't refetched
+			}
 			if !haveIcon {
 				it.Icon = c.itemIcon(ctx, ns, id)
 			}

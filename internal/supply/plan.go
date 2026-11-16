@@ -266,7 +266,9 @@ func planWrit(in Inputs, id int64, name string) Writ {
 	w.Tier = TierForRep(w.Rep)
 	if w.Tier == "" {
 		w.Tier = w.Customer.Tier
-		w.Rep = tierRep[w.Tier]
+		if w.Rep == 0 { // the quest API is authoritative when it answered
+			w.Rep = tierRep[w.Tier]
+		}
 	}
 	w.Pouch = in.Pouch[w.Tier]
 	writCost, writOK := BuyCost(in.Prices.Book(id), 1)

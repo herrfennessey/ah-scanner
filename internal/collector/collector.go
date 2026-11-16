@@ -358,6 +358,9 @@ func (c *Collector) lookupWritQuests(ctx context.Context) {
 			continue
 		}
 		rep, err := c.API.Quest(ctx, id-supply.QuestOffset, c.Cfg.StaticNamespaces, supply.DSLFaction)
+		if ctx.Err() != nil {
+			return
+		}
 		if err != nil {
 			c.Log.Warn("writ quest", "item", id, "err", err)
 			if !blizzard.IsNotFound(err) && !errors.Is(err, blizzard.ErrNoReputation) {

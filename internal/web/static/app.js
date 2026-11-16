@@ -131,16 +131,20 @@ function renderItemTip(t) {
     <div class="tip-avail">${t.available ? `${count(t.available)} available` : "None listed now"}</div></div>`;
   return html;
 }
-const itemTips = new Map();
+const itemTips = new Map(); // key → { at, p }: prices change every scan, so entries expire
+const TIP_TTL = 60000;
 let tipFor = null, tipShown = null; // requested vs. actually showing
 const touchOnly = () => matchMedia("(hover: none)").matches;
 async function itemTip(el, ev) {
   const id = el.dataset.tipItem;
   tipFor = el;
   const key = `${id}/${state.house}`;
-  if (!itemTips.has(key)) itemTips.set(key, api(`/api/item/${id}/tooltip?house=${encodeURIComponent(state.house)}`).catch((err) => { itemTips.delete(key); throw err; }));
+  const cached = itemTips.get(key);
+  if (!cached || Date.now() - cached.at > TIP_TTL) {
+    itemTips.set(key, { at: Date.now(), p: api(`/api/item/${id}/tooltip?house=${encodeURIComponent(state.house)}`).catch((err) => { itemTips.delete(key); throw err; }) });
+  }
   let t;
-  try { t = await itemTips.get(key); } catch { return; }
+  try { t = await itemTips.get(key).p; } catch { return; }
   if (tipFor !== el) return; // the pointer moved on while loading
   const r = el.getBoundingClientRect();
   tip.classList.add("item-tip"); // before showTip, so it is measured at its final width
@@ -816,7 +820,7 @@ async function renderSupply() {
 
   const crateRows = crates.map((c) => {
     const ranked = c.per_favor > 0;
-    const alts = c.options.filter((o) => o !== c.best && !(c.best && o.item_id === c.best.item_id && o.qty === c.best.qty));
+    const alts = c.options.filter((o) => !(c.best && o.item_id === c.best.item_id && o.qty === c.best.qty));
     return `<tr class="${ranked ? "" : "muted-row"}">
       <td>${supplyItem(items, c.id, c.note ? `<span class="sub-num">${esc(c.note)}</span>` : "")}</td>
       <td data-label="Favor">${c.favor || "?"}</td>
