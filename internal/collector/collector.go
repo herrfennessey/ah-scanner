@@ -21,6 +21,7 @@ import (
 	"github.com/herrfennessey/ah-scanner/internal/listing"
 	"github.com/herrfennessey/ah-scanner/internal/rollup"
 	"github.com/herrfennessey/ah-scanner/internal/store"
+	"github.com/herrfennessey/ah-scanner/internal/supply"
 )
 
 type House struct {
@@ -205,6 +206,7 @@ func (c *Collector) Cycle(ctx context.Context) error {
 		}
 	}
 	c.lookupItems(ctx)
+	c.lookupWritQuests(ctx)
 	c.pruneRaw()
 	err := errors.Join(errs...)
 	c.Status.EndCycle(err)
@@ -308,6 +310,10 @@ func (c *Collector) lookupItems(ctx context.Context) {
 		c.Log.Warn("item lookup query", "err", err)
 		return
 	}
+	haveIcon, err := c.Store.HaveIcons(ctx)
+	if err != nil {
+		c.Log.Warn("item icon query", "err", err)
+	}
 	var found atomic.Int32
 	work := make(chan int64)
 	var wg sync.WaitGroup
@@ -316,7 +322,7 @@ func (c *Collector) lookupItems(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for id := range work {
-				it, err := c.API.Item(ctx, id, c.Cfg.StaticNamespaces)
+				it, err := c.API.Item(ctx, id, c.Cfg.StaticNamespaces, haveIcon[id])
 				if err != nil && !blizzard.IsNotFound(err) {
 					c.Log.Warn("item lookup", "item", id, "err", err)
 				}
@@ -336,6 +342,40 @@ func (c *Collector) lookupItems(ctx context.Context) {
 	wg.Wait()
 	if len(ids) > 0 {
 		c.Log.Info("item names", "looked_up", len(ids), "found", found.Load())
+	}
+}
+
+// lookupWritQuests fetches, once, the reputation each Craftsman's Writ's daily quest pays.
+func (c *Collector) lookupWritQuests(ctx context.Context) {
+	have, err := c.Store.WritReps(ctx)
+	if err != nil {
+		c.Log.Warn("writ quest query", "err", err)
+		return
+	}
+	n := 0
+	for _, id := range supply.WritIDs {
+		if _, ok := have[id]; ok {
+			continue
+		}
+		rep, err := c.API.Quest(ctx, id-supply.QuestOffset, c.Cfg.StaticNamespaces, supply.DSLFaction)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			c.Log.Warn("writ quest", "item", id, "err", err)
+			if !blizzard.IsNotFound(err) && !errors.Is(err, blizzard.ErrNoReputation) {
+				continue // transient: retry next cycle
+			}
+			rep = 0 // recorded as unknown so it isn't refetched every cycle
+		}
+		if err := c.Store.SetWritRep(ctx, id, id-supply.QuestOffset, rep); err != nil {
+			c.Log.Warn("writ quest store", "item", id, "err", err)
+			return
+		}
+		n++
+	}
+	if n > 0 {
+		c.Log.Info("writ quests", "fetched", n)
 	}
 }
 

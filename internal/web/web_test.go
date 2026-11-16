@@ -154,3 +154,80 @@ func TestMCPTools(t *testing.T) {
 		t.Fatalf("status: %v", st)
 	}
 }
+
+func TestTooltipEndpoint(t *testing.T) {
+	srv, st := fixture(t, "")
+	st.SetItem(context.Background(), store.Item{ID: 7069, Name: "Elemental Air", Tooltip: json.RawMessage(`{"name":"Elemental Air"}`)})
+	resp, err := http.Get(srv.URL + "/api/item/7069/tooltip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Name      string          `json:"name"`
+		Preview   json.RawMessage `json:"preview"`
+		House     string          `json:"house"`
+		Min       int64           `json:"min"`
+		Available int64           `json:"available"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != 200 || out.Name != "Elemental Air" || string(out.Preview) != `{"name":"Elemental Air"}` || out.Min != 2289 || out.Available != 4 || out.House != "horde" {
+		t.Fatalf("%d %+v", resp.StatusCode, out)
+	}
+	resp2, _ := http.Get(srv.URL + "/api/item/999/tooltip")
+	resp2.Body.Close()
+	if resp2.StatusCode != 404 {
+		t.Fatalf("unknown item: %d", resp2.StatusCode)
+	}
+}
+
+func TestSupplyEndpoint(t *testing.T) {
+	srv, st := fixture(t, "")
+	ctx := context.Background()
+	fill := `{"spells":[{"description":"Use: Fill the crate with any bundle from the following list:\n- 20 Peacebloom\n- 10 Earthroot"}]}`
+	for _, it := range []store.Item{
+		{ID: 248682, Name: "Waylaid Crate: Apprentice Herbs", Tooltip: json.RawMessage(fill)},
+		{ID: 2449, Name: "Earthroot"},
+		{ID: 264021, Name: "Craftsman's Writ: Golden Rod"},
+		{ID: 11128, Name: "Golden Rod"},
+	} {
+		st.SetItem(ctx, it)
+	}
+	st.SetWritRep(ctx, 264021, 94221, 75)
+	now := time.Now().Unix()
+	st.ApplySnapshot(ctx, store.Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: now, SHA256: "s"}, []listing.Listing{
+		{AuctionID: 1, ItemID: 7069, Quantity: 4, UnitPrice: 2289, TimeLeft: listing.Long},
+		{AuctionID: 11, ItemID: 248682, Quantity: 3, UnitPrice: 10, TimeLeft: listing.Long},
+		{AuctionID: 12, ItemID: 2449, Quantity: 100, UnitPrice: 60, TimeLeft: listing.Long},
+		{AuctionID: 13, ItemID: 264021, Quantity: 1, UnitPrice: 500, TimeLeft: listing.Long},
+		{AuctionID: 14, ItemID: 11128, Quantity: 4, UnitPrice: 2000, TimeLeft: listing.Long},
+	})
+	resp, err := http.Get(srv.URL + "/api/supply")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Crates []struct {
+			ID       int64   `json:"id"`
+			PerFavor float64 `json:"per_favor"`
+			Icon     string  `json:"icon"`
+		} `json:"crates"`
+		Writs []struct {
+			ID       int64 `json:"id"`
+			Net      int64 `json:"net"`
+			Customer struct {
+				Zone string `json:"zone"`
+			} `json:"customer"`
+		} `json:"writs"`
+		ComputedAt int64 `json:"computed_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("%d %v", resp.StatusCode, err)
+	}
+	// (10 crate + 10×60 Earthroot) / 5 Favor; 3300 pouch − 500 writ − 2000 Golden Rod.
+	if len(out.Crates) != 1 || out.Crates[0].PerFavor != 122 || len(out.Writs) != 1 || out.Writs[0].Net != 800 ||
+		out.Writs[0].Customer.Zone != "Arathi Highlands" || out.ComputedAt == 0 {
+		t.Fatalf("%+v", out)
+	}
+}

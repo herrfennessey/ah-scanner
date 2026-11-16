@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,5 +136,77 @@ func TestMeta(t *testing.T) {
 	st.SetMeta(ctx, "k", "b")
 	if v, _ := st.Meta(ctx, "k"); v != "b" {
 		t.Fatalf("got %q", v)
+	}
+}
+
+func TestSetItemKeepsTooltip(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	if err := st.SetItem(ctx, Item{ID: 1, Name: "X", Tooltip: json.RawMessage(`{"name":"X"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetItem(ctx, Item{ID: 1, Name: "X"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ItemTooltip(ctx, 1)
+	if err != nil || string(got) != `{"name":"X"}` {
+		t.Fatalf("tooltip %q, err %v", got, err)
+	}
+	if got, _ := st.ItemTooltip(ctx, 2); got != nil {
+		t.Fatalf("unknown item tooltip %q, want nil", got)
+	}
+}
+
+func TestItemsNeedingNamesIncludesMissingTooltip(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	st.ApplySnapshot(ctx, Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: 1, SHA256: "a"},
+		[]listing.Listing{{AuctionID: 1, ItemID: 5, Quantity: 1, UnitPrice: 10, TimeLeft: listing.Long}})
+	st.SetItem(ctx, Item{ID: 5, Name: "Old", Icon: "x.jpg"})
+	st.DB.Exec(`UPDATE item SET looked_up_at = 0 WHERE id = 5`)
+	ids, err := st.ItemsNeedingNames(ctx, 10, time.Hour)
+	if err != nil || len(ids) != 1 || ids[0] != 5 {
+		t.Fatalf("ids %v, err %v", ids, err)
+	}
+}
+
+func TestHaveIcons(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	st.SetItem(ctx, Item{ID: 1, Name: "A", Icon: "a.jpg"})
+	st.SetItem(ctx, Item{ID: 2, Name: "B"})
+	got, err := st.HaveIcons(ctx)
+	if err != nil || !got[1] || got[2] || len(got) != 1 {
+		t.Fatalf("%v %v", got, err)
+	}
+}
+
+func TestWritRepRoundTrip(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	if err := st.SetWritRep(ctx, 264021, 94221, 75); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.WritReps(ctx)
+	if err != nil || got[264021] != 75 || len(got) != 1 {
+		t.Fatalf("%v %v", got, err)
+	}
+}
+
+func TestItemsNeedingNamesPutsUnnamedFirst(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	var l []listing.Listing
+	for i := int64(1); i <= 20; i++ {
+		l = append(l, listing.Listing{AuctionID: i, ItemID: i, Quantity: 1, UnitPrice: 10, TimeLeft: listing.Long})
+	}
+	st.ApplySnapshot(ctx, Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: 1, SHA256: "a"}, l)
+	for i := int64(1); i <= 19; i++ { // named and iconed, only the tooltip missing
+		st.SetItem(ctx, Item{ID: i, Name: "Old", Icon: "x.jpg"})
+	}
+	st.DB.Exec(`UPDATE item SET looked_up_at = 0`)
+	ids, err := st.ItemsNeedingNames(ctx, 1, time.Hour)
+	if err != nil || len(ids) != 1 || ids[0] != 20 {
+		t.Fatalf("the never-seen item must come first: %v %v", ids, err)
 	}
 }

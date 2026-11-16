@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -285,7 +286,7 @@ func loadOpen(ctx context.Context, tx *sql.Tx, houseID int64, kind string, prevT
 	return m, rows.Err()
 }
 
-// ItemsNeedingNames returns item IDs seen on the AH that lack a name or icon and were not looked up recently.
+// ItemsNeedingNames returns item IDs seen on the AH that lack a name, icon or tooltip and were not looked up recently.
 func (s *Store) ItemsNeedingNames(ctx context.Context, limit int, retryAfter time.Duration) ([]int64, error) {
 	cutoff := time.Now().Add(-retryAfter).Unix()
 	// Items in tracked auctions, plus anything in the latest snapshot of any house (price-only
@@ -294,7 +295,8 @@ func (s *Store) ItemsNeedingNames(ctx context.Context, limit int, retryAfter tim
 			SELECT item_id FROM auction WHERE closed_at IS NULL
 			UNION SELECT item_id FROM item_snapshot WHERE snapshot_id IN (SELECT MAX(id) FROM snapshot GROUP BY house_id, kind)
 		) a LEFT JOIN item i ON i.id = a.item_id
-		WHERE (i.id IS NULL OR ((i.name IS NULL OR i.icon IS NULL OR i.looked_up_at IS NULL) AND COALESCE(i.looked_up_at,0) < ?)) LIMIT ?`, cutoff, limit)
+		WHERE (i.id IS NULL OR ((i.name IS NULL OR i.icon IS NULL OR i.tooltip IS NULL OR i.looked_up_at IS NULL) AND COALESCE(i.looked_up_at,0) < ?))
+		ORDER BY i.id IS NULL DESC, i.name IS NULL DESC, i.icon IS NULL DESC LIMIT ?`, cutoff, limit) // new items before the tooltip backfill
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +322,9 @@ type Item struct {
 	ItemLevel int
 	ReqLevel  int
 	Icon      string // icon URL from the media endpoint
+	// Tooltip is the raw preview_item object from the item API: every tooltip line
+	// (stats, binding, "Use:" text, recipe, sell price). Nil keeps what is stored.
+	Tooltip json.RawMessage
 }
 
 // SetItem stores a resolved item. An empty name records a failed lookup.
@@ -332,16 +337,55 @@ func (s *Store) SetItem(ctx context.Context, it Item) error {
 	if it.Name != "" {
 		quality = it.Quality
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO item (id, name, quality, class, subclass, sell_price, item_level, required_level, icon, looked_up_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
+	var tooltip any
+	if len(it.Tooltip) > 0 {
+		tooltip = string(it.Tooltip)
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO item (id, name, quality, class, subclass, sell_price, item_level, required_level, icon, tooltip, looked_up_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET name=COALESCE(excluded.name, item.name), quality=COALESCE(excluded.quality, item.quality),
 		class=COALESCE(excluded.class, item.class), subclass=COALESCE(excluded.subclass, item.subclass),
 		sell_price=COALESCE(excluded.sell_price, item.sell_price), item_level=COALESCE(excluded.item_level, item.item_level),
 		required_level=COALESCE(excluded.required_level, item.required_level), icon=COALESCE(excluded.icon, item.icon),
-		looked_up_at=excluded.looked_up_at`,
+		tooltip=COALESCE(excluded.tooltip, item.tooltip), looked_up_at=excluded.looked_up_at`,
 		it.ID, name, quality, nullStr(it.Class), nullStr(it.Subclass), nullIfZero(it.SellPrice), nullIfZero(int64(it.ItemLevel)),
-		nullIfZero(int64(it.ReqLevel)), nullStr(it.Icon), time.Now().Unix())
+		nullIfZero(int64(it.ReqLevel)), nullStr(it.Icon), tooltip, time.Now().Unix())
 	return err
+}
+
+// HaveIcons returns the IDs of items whose icon is already stored, so a tooltip backfill can
+// skip the media request.
+func (s *Store) HaveIcons(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM item WHERE icon IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		m[id] = true
+	}
+	return m, rows.Err()
+}
+
+// ItemTooltip returns an item's stored preview_item JSON, or nil if there is none.
+func (s *Store) ItemTooltip(ctx context.Context, id int64) (json.RawMessage, error) {
+	var t sql.NullString
+	err := s.DB.QueryRowContext(ctx, `SELECT tooltip FROM item WHERE id=?`, id).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !t.Valid {
+		return nil, nil
+	}
+	return json.RawMessage(t.String), nil
 }
 
 func nullStr(s string) any {
@@ -515,6 +559,7 @@ func migrate(db *sql.DB) ([]string, error) {
 	add := []struct{ table, column, decl string }{
 		{"item_daily", "sales", "INT DEFAULT 0"},
 		{"item_daily", "largest_sale", "INT DEFAULT 0"},
+		{"item", "tooltip", "TEXT"},
 	}
 	for _, a := range add {
 		var n int
@@ -573,4 +618,31 @@ func (s *Store) Meta(ctx context.Context, key string) (string, error) {
 func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
+}
+
+// SetWritRep records the reputation a writ's quest pays.
+func (s *Store) SetWritRep(ctx context.Context, itemID, questID int64, rep int) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO writ_quest (item_id, quest_id, rep, fetched_at) VALUES (?,?,?,?)
+		ON CONFLICT(item_id) DO UPDATE SET quest_id=excluded.quest_id, rep=excluded.rep, fetched_at=excluded.fetched_at`,
+		itemID, questID, rep, time.Now().Unix())
+	return err
+}
+
+// WritReps returns writ item id → quest reputation for every writ fetched so far.
+func (s *Store) WritReps(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT item_id, rep FROM writ_quest`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var rep int
+		if err := rows.Scan(&id, &rep); err != nil {
+			return nil, err
+		}
+		m[id] = rep
+	}
+	return m, rows.Err()
 }

@@ -3,6 +3,7 @@ package blizzard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -140,8 +141,9 @@ func AuctionsPath(rulesetID int, houseID int64, commodities bool) string {
 
 var qualities = map[string]int{"POOR": 0, "COMMON": 1, "UNCOMMON": 2, "RARE": 3, "EPIC": 4, "LEGENDARY": 5, "ARTIFACT": 6, "HEIRLOOM": 7}
 
-// Item looks up an item's name and class, trying each static namespace in order.
-func (c *Client) Item(ctx context.Context, id int64, namespaces []string) (store.Item, error) {
+// Item looks up an item's name, class and tooltip (preview_item), trying each static namespace
+// in order. haveIcon skips the media request when the icon is already stored.
+func (c *Client) Item(ctx context.Context, id int64, namespaces []string, haveIcon bool) (store.Item, error) {
 	var lastErr error
 	for _, ns := range namespaces {
 		var raw struct {
@@ -158,6 +160,7 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string) (store
 			ItemSubclass struct {
 				Name json.RawMessage `json:"name"`
 			} `json:"item_subclass"`
+			PreviewItem json.RawMessage `json:"preview_item"`
 		}
 		err := c.GetJSON(ctx, "/data/wow/item/"+strconv.FormatInt(id, 10), url.Values{"namespace": {ns}}, &raw)
 		if err != nil {
@@ -165,12 +168,17 @@ func (c *Client) Item(ctx context.Context, id int64, namespaces []string) (store
 			continue
 		}
 		it := store.Item{ID: id, Name: localized(raw.Name), Class: localized(raw.ItemClass.Name), Subclass: localized(raw.ItemSubclass.Name), SellPrice: raw.SellPrice,
-			ItemLevel: raw.Level, ReqLevel: raw.ReqLevel}
+			ItemLevel: raw.Level, ReqLevel: raw.ReqLevel, Tooltip: raw.PreviewItem}
 		if q, ok := qualities[raw.Quality.Type]; ok {
 			it.Quality = q
 		}
 		if it.Name != "" {
-			it.Icon = c.itemIcon(ctx, ns, id)
+			if len(it.Tooltip) == 0 {
+				it.Tooltip = json.RawMessage("null") // no tooltip in the API: stored so it isn't refetched
+			}
+			if !haveIcon {
+				it.Icon = c.itemIcon(ctx, ns, id)
+			}
 			return it, nil
 		}
 		lastErr = fmt.Errorf("item %d: no name in %s", id, ns)
@@ -195,4 +203,35 @@ func (c *Client) itemIcon(ctx context.Context, ns string, id int64) string {
 		}
 	}
 	return ""
+}
+
+// ErrNoReputation means a quest exists but awards no reputation with the faction asked about.
+var ErrNoReputation = errors.New("no reputation with that faction")
+
+// Quest returns the reputation a quest awards with one faction, trying each static namespace.
+func (c *Client) Quest(ctx context.Context, id int64, namespaces []string, factionID int64) (int, error) {
+	var lastErr error
+	for _, ns := range namespaces {
+		var raw struct {
+			Rewards struct {
+				Reputations []struct {
+					Reward struct {
+						ID int64 `json:"id"`
+					} `json:"reward"`
+					Value int `json:"value"`
+				} `json:"reputations"`
+			} `json:"rewards"`
+		}
+		if err := c.GetJSON(ctx, "/data/wow/quest/"+strconv.FormatInt(id, 10), url.Values{"namespace": {ns}}, &raw); err != nil {
+			lastErr = err
+			continue
+		}
+		for _, r := range raw.Rewards.Reputations {
+			if r.Reward.ID == factionID {
+				return r.Value, nil
+			}
+		}
+		return 0, fmt.Errorf("quest %d, faction %d: %w", id, factionID, ErrNoReputation)
+	}
+	return 0, lastErr
 }

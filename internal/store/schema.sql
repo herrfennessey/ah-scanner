@@ -53,3 +53,6 @@ CREATE TABLE IF NOT EXISTS flip_cache (id INTEGER PRIMARY KEY CHECK (id = 1), co
 
 -- one-off markers (e.g. completed backfills)
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+
+-- reputation each Craftsman's Writ's daily quest pays (quest API), fetched once per writ.
+CREATE TABLE IF NOT EXISTS writ_quest (item_id INTEGER PRIMARY KEY, quest_id INT, rep INT, fetched_at INT);

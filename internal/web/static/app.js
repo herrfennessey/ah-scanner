@@ -57,7 +57,9 @@ function change(v) {
 }
 function icon(row, big) {
   const style = row.icon ? ` style="background-image:url('${esc(row.icon)}')"` : "";
-  return `<span class="icon ${big ? "big" : ""} q${row.quality ?? 1}"${style} aria-hidden="true"></span>`;
+  // Icons with an item id show the in-game tooltip on hover, focus or tap (itemTip below).
+  const tipAttrs = row.id ? ` data-tip-item="${esc(row.id)}" tabindex="0" role="img" aria-label="${esc(row.name || "Item")}: show details"` : ` aria-hidden="true"`;
+  return `<span class="icon ${big ? "big" : ""} q${row.quality ?? 1}"${style}${tipAttrs}></span>`;
 }
 function crest(faction) {
   if (faction === "horde") {
@@ -80,7 +82,91 @@ function showTip(html, ev) {
   if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - 14;
   tip.style.left = `${x}px`; tip.style.top = `${y}px`;
 }
-const hideTip = () => { tip.hidden = true; };
+const hideTip = () => { tip.hidden = true; tip.classList.remove("item-tip"); };
+
+/* item tooltips: Blizzard's preview_item rendered like the in-game tooltip */
+const QUALITY_TYPES = ["POOR", "COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY"];
+const qualityOf = (q) => Math.max(0, QUALITY_TYPES.indexOf(q?.type));
+const ds = (o) => o?.display_string || o?.display?.display_string || "";
+const rgb = (c) => c ? `rgb(${c.r},${c.g},${c.b})` : "";
+function previewLines(p) {
+  const out = [];
+  const line = (text, cls = "", style = "") => text && out.push(`<div class="tl ${cls}"${style ? ` style="color:${style}"` : ""}>${esc(text)}</div>`);
+  line(p.level?.display_string, "tl-ilvl");
+  line(p.binding?.name);
+  line(p.unique_equipped);
+  const slot = p.inventory_type?.type !== "NON_EQUIP" ? p.inventory_type?.name : "";
+  const sub = p.is_subclass_hidden ? "" : p.item_subclass?.name;
+  if (slot || sub) out.push(`<div class="tl tl-split"><span>${esc(slot)}</span><span>${esc(sub)}</span></div>`);
+  if (p.weapon) {
+    out.push(`<div class="tl tl-split"><span>${esc(ds(p.weapon.damage))}</span><span>${esc(ds(p.weapon.attack_speed))}</span></div>`);
+    line(ds(p.weapon.dps));
+  }
+  line(ds(p.armor));
+  for (const st of p.stats || []) line(ds(st), "", rgb(st.display?.color));
+  line(ds(p.durability));
+  for (const r of Object.values(p.requirements || {})) line(ds(r));
+  for (const sp of p.spells || []) line(sp.description, "tl-use");
+  if (p.description) line(p.description, p.recipe ? "tl-use" : "tl-flavor");
+  return out.join("");
+}
+function coins(sp) {
+  return sp?.value ? `<div class="tl tl-sell">Sell Price: ${money(sp.value)}</div>` : "";
+}
+function renderItemTip(t) {
+  const p = t.preview || {};
+  const q = t.preview ? qualityOf(p.quality) : t.quality;
+  let html = `<div class="tip-head">${icon({ icon: t.icon, quality: q })}<span class="tip-name q${q}">${esc(p.name || t.name)}</span></div>`;
+  html += previewLines(p);
+  if (p.recipe?.item) {
+    const r = p.recipe.item;
+    html += `<div class="tip-sep"></div><div class="tl q${qualityOf(r.quality)}">${esc(r.name)}</div>${previewLines(r)}`;
+    if (p.recipe.reagents_display_string) html += `<div class="tl">Reagents: ${esc(p.recipe.reagents_display_string)}</div>`;
+  }
+  html += coins(p.sell_price);
+  if (!t.preview) html += `<div class="tl tl-flavor">Details appear after the collector looks this item up.</div>`;
+  html += `<div class="tip-foot"><div class="tip-foot-title">In the ${esc(factionName(t.house))} auction house</div>
+    <div class="row"><span>Buyout</span>${money(t.min)}</div>
+    <div class="row"><span>Market value</span>${money(t.fair)}</div>
+    <div class="tip-avail">${t.available ? `${count(t.available)} available` : "None listed now"}</div></div>`;
+  return html;
+}
+const itemTips = new Map(); // key → { at, p }: prices change every scan, so entries expire
+const TIP_TTL = 60000;
+let tipFor = null, tipShown = null; // requested vs. actually showing
+const touchOnly = () => matchMedia("(hover: none)").matches;
+async function itemTip(el, ev) {
+  const id = el.dataset.tipItem;
+  tipFor = el;
+  const key = `${id}/${state.house}`;
+  const cached = itemTips.get(key);
+  if (!cached || Date.now() - cached.at > TIP_TTL) {
+    itemTips.set(key, { at: Date.now(), p: api(`/api/item/${id}/tooltip?house=${encodeURIComponent(state.house)}`).catch((err) => { itemTips.delete(key); throw err; }) });
+  }
+  let t;
+  try { t = await itemTips.get(key).p; } catch { return; }
+  if (tipFor !== el) return; // the pointer moved on while loading
+  const r = el.getBoundingClientRect();
+  tip.classList.add("item-tip"); // before showTip, so it is measured at its final width
+  showTip(renderItemTip(t), ev?.clientX != null ? ev : { clientX: r.right, clientY: r.top });
+  tipShown = el;
+}
+function endItemTip() { tipFor = tipShown = null; hideTip(); }
+// Touch screens fire compat mouseover/focus before the click; only the click counts there.
+document.addEventListener("mouseover", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !touchOnly()) itemTip(el, e); });
+document.addEventListener("mouseout", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !touchOnly() && !el.contains(e.relatedTarget)) endItemTip(); });
+document.addEventListener("focusin", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !touchOnly()) itemTip(el); });
+document.addEventListener("focusout", (e) => { if (e.target.closest?.("[data-tip-item]") && !touchOnly()) endItemTip(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && tipFor) endItemTip(); });
+// Touch: a tap on an icon toggles its tooltip instead of following the row's link; a tap
+// anywhere else closes it.
+document.addEventListener("click", (e) => {
+  if (!touchOnly()) return;
+  const el = e.target.closest?.("[data-tip-item]");
+  if (!el) { if (tipShown) endItemTip(); return; }
+  e.preventDefault(); e.stopPropagation();
+  if (tipShown === el || tipFor === el) endItemTip(); else itemTip(el, e);
+}, true);
 
 /* houses + hero */
 async function loadHouses() {
@@ -694,6 +780,124 @@ function funnelTable(funnel) {
   </table></div>`;
 }
 
+/* supply: Durotar Supply and Logistics crates (Favor) and writs (reputation) */
+// Gold per rep: whole copper, "<1c" below that; negative means the writ pays you.
+const perRep = (v) => {
+  if (!v) return "free";
+  const c = Math.round(Math.abs(v)), amount = c ? plain(c) : "<1c";
+  return v < 0 ? `earns ${amount}` : amount;
+};
+function supplyItem(items, id, extra = "") {
+  const it = items[id] || { name: `Item #${id}`, quality: 1 };
+  return `<div class="item-cell">${icon({ id, ...it })}<div><div class="item-name q${it.quality}">${esc(it.name)}</div>${extra}</div></div>`;
+}
+function inScope(w, scope) {
+  if (scope === "world") return true;
+  if (scope.startsWith("c:")) return w.continent === scope.slice(2);
+  return w.customer.zone === scope.slice(2);
+}
+async function renderSupply() {
+  $("#view").innerHTML = `
+    <section class="panel flips-panel">
+      <div class="flips-head"><div>
+        <h2 class="panel-title">Supply</h2>
+        <p class="flips-lede">Durotar Supply and Logistics, priced from the Horde auction house. Crates earn Merchant's Favor for the vendor; writs earn reputation, ideally for no gold.</p>
+      </div></div>
+      <div id="supply-out" aria-live="polite"><div class="empty-state">Pricing crates and writs…</div></div>
+    </section>`;
+  let d;
+  try { d = await api("/api/supply"); } catch (err) {
+    $("#supply-out").innerHTML = emptyState("Can't price supplies yet", esc(err.message));
+    return;
+  }
+  const out = $("#supply-out");
+  if (!out) return;
+  const items = d.items || {};
+  const crates = d.crates || [], writs = d.writs || [];
+  const zones = [...new Set(writs.map((w) => w.customer.zone).filter(Boolean))].sort();
+  let scope = store.get("supplyScope", "world");
+  if (scope !== "world" && !(scope.startsWith("c:") || zones.includes(scope.slice(2)))) scope = "world";
+
+  const crateRows = crates.map((c) => {
+    const ranked = c.per_favor > 0;
+    const alts = (c.options || []).filter((o) => !(c.best && o.item_id === c.best.item_id && o.qty === c.best.qty));
+    return `<tr class="${ranked ? "" : "muted-row"}">
+      <td>${supplyItem(items, c.id, c.note ? `<span class="sub-num">${esc(c.note)}</span>` : "")}</td>
+      <td data-label="Favor">${c.favor || "?"}</td>
+      <td data-label="Cheapest fill">${c.best ? `${count(c.best.qty)} × ${esc(items[c.best.item_id]?.name || c.best.name)}<span class="sub-num">${money(c.best.cost)}</span>` : "—"}${
+        alts.length ? `<details class="alts"><summary>${alts.length} other fill${alts.length > 1 ? "s" : ""}</summary>${alts.map((o) =>
+          `<div>${count(o.qty)} × ${esc(o.name)}: ${o.ok ? money(o.cost) : `<span class="none">not enough listed</span>`}</div>`).join("")}</details>` : ""}</td>
+      <td data-label="Empty crate">${money(c.crate_cost)}</td>
+      <td data-label="Total">${money(c.total)}</td>
+      <td data-label="Per Favor" class="${ranked ? "pos" : ""}">${ranked ? money(c.per_favor) : "—"}</td></tr>`;
+  }).join("");
+
+  out.innerHTML = `
+    <h3 class="supply-h">Crates for Merchant's Favor</h3>
+    <p class="fine supply-note">Cheapest first: an empty crate plus its cheapest fill, divided by the Favor the sealed crate pays (raw materials 5/10/15, crafted double; Artisan not known yet).</p>
+    <div class="scroll-x"><table class="mini flips supply">
+      <thead><tr><th>Crate</th><th>Favor</th><th>Cheapest fill</th><th>Empty crate</th><th>Total</th><th>Gold per Favor</th></tr></thead>
+      <tbody>${crateRows}</tbody></table></div>
+    <h3 class="supply-h">Writs for reputation</h3>
+    <div class="scope-row">
+      <div class="risk-seg" role="radiogroup" aria-label="Where">${[["world", "World"], ["c:Kalimdor", "Kalimdor"], ["c:Eastern Kingdoms", "Eastern Kingdoms"]].map(([k, l]) =>
+        `<button type="button" role="radio" data-scope="${esc(k)}" aria-checked="${scope === k}">${l}</button>`).join("")}</div>
+      <label class="zone-pick">Zone <select id="zone-pick"><option value="">Any</option>${zones.map((z) => `<option value="z:${esc(z)}" ${scope === "z:" + z ? "selected" : ""}>${esc(z)}</option>`).join("")}</select></label>
+    </div>
+    <div id="zone-sum"></div>
+    <div id="writ-table"></div>
+    <p class="fine">Each named writ can be handed in once a day. Net = coin pouch (a guide estimate: ${plain(d.pouch.Journeyman)} / ${plain(d.pouch.Expert)} / ${plain(d.pouch.Artisan)} for Journeyman / Expert / Artisan) − the writ − the item it asks for, at Horde prices. Customers come from community guides; some aren't known yet.</p>`;
+
+  const draw = () => {
+    store.set("supplyScope", scope);
+    out.querySelectorAll("[data-scope]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.scope === scope)));
+    $("#zone-pick").value = scope.startsWith("z:") ? scope : "";
+    const shown = writs.filter((w) => inScope(w, scope));
+    const byZone = new Map();
+    for (const w of shown) {
+      if (!w.ok || !w.customer.zone) continue;
+      const z = byZone.get(w.customer.zone) || { zone: w.customer.zone, n: 0, rep: 0, net: 0 };
+      z.n++; z.rep += w.rep; z.net += w.net;
+      byZone.set(z.zone, z);
+    }
+    const sums = [...byZone.values()].sort((a, b) => (-a.net / (a.rep || 1)) - (-b.net / (b.rep || 1)));
+    $("#zone-sum").innerHTML = scope.startsWith("z:") || !sums.length ? "" : `
+      <div class="scroll-x"><table class="mini zone-sum"><caption>Doing every buyable writ in a zone, cheapest rep first</caption>
+        <thead><tr><th>Zone</th><th>Writs</th><th>Rep</th><th>Net gold</th><th>Gold per rep</th></tr></thead>
+        <tbody>${sums.map((z) => `<tr><td><button type="button" class="linkish" data-zone="${esc(z.zone)}">${esc(z.zone)}</button></td>
+          <td>${z.n}</td><td>${count(z.rep)}</td><td class="${z.net >= 0 ? "pos" : ""}">${money(z.net, { zero: "0" })}</td><td>${perRep(Math.round(-z.net / z.rep))}</td></tr>`).join("")}</tbody></table></div>`;
+    const bench = [];
+    if (d.receipt?.ok) bench.push(`<tr class="bench"><td><span class="kind kind-relist">Benchmark</span> Forged Delivery Receipt<span class="sub-num">15 Favor at the best crate's price, plus the cheapest empty crate, for 50 rep. Needs Friendly.</span></td>
+      <td data-label="Asks for">—</td><td data-label="Writ">—</td><td data-label="Coin pouch">—</td><td data-label="Net">—</td><td data-label="Rep">50</td><td data-label="Gold per rep">${perRep(Math.round(d.receipt.per_rep))}</td><td data-label="Hand in">The Crossroads camp</td></tr>`);
+    for (const w of d.sealed || []) bench.push(`<tr class="bench"><td>${supplyItem(items, w.id, `<span class="sub-num">Opens into a ${esc(w.item)}: valued at the average order</span>`)}</td>
+      <td data-label="Asks for">${w.ok ? money(w.item_cost) : "—"}<span class="sub-num">on average</span></td><td data-label="Writ">${money(w.writ_cost)}</td><td data-label="Coin pouch">${money(w.pouch)}</td>
+      <td data-label="Net" class="${w.net >= 0 ? "pos" : ""}">${w.ok ? money(w.net, { zero: "0" }) : "—"}</td><td data-label="Rep">${w.rep || "?"}</td><td data-label="Gold per rep">${w.ok ? perRep(w.per_rep) : "—"}</td><td data-label="Hand in">Depends on the order</td></tr>`);
+    $("#writ-table").innerHTML = !shown.length ? emptyState("No known writs here", "No writ customers are known in this area yet. Try World.") : `
+      <div class="scroll-x"><table class="mini flips supply writs">
+        <thead><tr><th>Writ</th><th>Asks for</th><th>Writ</th><th>Coin pouch</th><th>Net</th><th>Rep</th><th>Gold per rep</th><th>Hand in to</th></tr></thead>
+        <tbody>${shown.map((w) => {
+          const c = w.customer;
+          return `<tr class="${w.ok ? "" : "muted-row"}">
+            <td>${w.ok && w.net >= 0 ? `<span class="tag tag-new">Free rep</span>` : ""}${supplyItem(items, w.id, `<span class="sub-num">${esc(w.tier || "Tier unknown")}</span>`)}</td>
+            <td data-label="Asks for">${w.item_id ? supplyItem(items, w.item_id, `<span class="sub-num">${w.qty > 1 ? `${count(w.qty)} × ` : ""}${w.item_ok ? money(w.item_cost) : "not enough on the AH"}</span>`) : `${esc(w.item)}<span class="sub-num">not seen on the AH</span>`}</td>
+            <td data-label="Writ">${w.writ_cost ? money(w.writ_cost) : `<span class="none">not listed</span>`}</td>
+            <td data-label="Coin pouch">${money(w.pouch)}</td>
+            <td data-label="Net" class="${w.ok && w.net >= 0 ? "pos" : ""}">${w.ok ? money(w.net, { zero: "0" }) : "—"}</td>
+            <td data-label="Rep">${w.rep || "?"}</td>
+            <td data-label="Gold per rep">${w.ok && w.rep ? perRep(w.per_rep) : "—"}</td>
+            <td data-label="Hand in to">${c.zone ? `${esc(c.npc || "Customer not known")}<span class="sub-num">${esc(c.zone)}${c.coords ? ` · ${esc(c.coords)}` : ""}</span>` : `<span class="none">Not known yet</span>`}</td></tr>`;
+        }).join("")}${bench.join("")}</tbody></table></div>`;
+  };
+  out.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-scope], [data-zone]");
+    if (!b) return;
+    scope = b.dataset.scope || `z:${b.dataset.zone}`;
+    draw();
+  });
+  $("#zone-pick").addEventListener("change", (e) => { scope = e.target.value || "world"; draw(); });
+  draw();
+}
+
 /* router */
 function route() {
   hideTip();
@@ -701,13 +905,14 @@ function route() {
   const [path, qs] = h.slice(1).split("?");
   const params = new URLSearchParams(qs || "");
   const m = path.match(/^\/item\/(\d+)/);
-  const section = path.startsWith("/status") ? "status" : (m || path.startsWith("/browse")) ? "browse" : "advisor";
+  const section = path.startsWith("/status") ? "status" : path.startsWith("/supply") ? "supply" : (m || path.startsWith("/browse")) ? "browse" : "advisor";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   $("#hero").classList.toggle("compact", section !== "browse" || !!m);
   $("#layout").classList.toggle("full", section !== "browse");
   if (section !== "advisor") stopLive();
   if (m) return renderItem(m[1], params.get("variant") || "");
   if (section === "status") return renderStatus();
+  if (section === "supply") return renderSupply();
   if (section === "advisor") return renderFlips();
   refreshList();
 }

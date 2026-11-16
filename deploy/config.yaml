@@ -55,3 +55,8 @@ deposit_rate: 0.20          # deposit ≈ vendor sell price × this (unconfirmed
 alert:
   url: ""                   # ntfy topic URL or Home Assistant webhook; empty = no push alerts
   after_fail: 3             # consecutive failed cycles before alerting
+
+# Supply tab (Durotar Supply and Logistics). The API doesn't say what a writ's Coin Pouch holds;
+# these are copper estimates from guides (Journeyman ~22–45s, Expert ~50–90s, Artisan ~75s).
+# supply:
+#   coin_pouch: {journeyman: 3300, expert: 7000, artisan: 7500}

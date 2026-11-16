@@ -38,6 +38,21 @@ profit per day of holding, so fast, likely sales come first; resale is never
 above market value, nor on Blackwater above the dearer of the Horde and Alliance prices
 (every Blackwater buyer can buy at home instead).
 
+**Supply** plans Durotar Supply and Logistics hand-ins at Horde prices:
+
+- **Crates for Merchant's Favor**, cheapest first: an empty Waylaid Crate plus its cheapest
+  fill bundle, divided by the Favor the sealed crate pays (raw materials 5/10/15 by tier,
+  crafted double; Artisan unknown). Fill lists come from each crate's in-game tooltip (API).
+- **Writs for reputation**, by net gold: the writ's coin pouch minus the writ and the item it
+  asks for. Rep per writ comes from the quest API (75/125/200). Each row names the customer
+  and zone; filter by world, continent or zone, with a per-zone summary. The Forged Delivery
+  Receipt (15 Favor + an empty crate → 50 rep) is shown as a benchmark, and sealed writs are
+  valued at their tier's average order.
+- Coin pouch amounts and customers come from community guides (sources in
+  `internal/supply/data.go`); override the pouch in `config.yaml` under `supply.coin_pouch`.
+
+Hovering any item icon shows its in-game tooltip, from the item API, with this house's prices.
+
 Plus **Browse** (every item, price history, when-to-post heatmap) and the same data as MCP
 tools for Claude at `/mcp`.
 

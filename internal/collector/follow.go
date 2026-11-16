@@ -192,6 +192,7 @@ func (c *Collector) runFollow(ctx context.Context, nightly interface{ Next(time.
 		}
 		if applied {
 			c.lookupItems(ctx)
+			c.lookupWritQuests(ctx)
 			c.refresh(ctx)
 		}
 		c.pruneRaw()
