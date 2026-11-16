@@ -142,11 +142,12 @@ function renderItemTip(t) {
   }
   html += coins(p.sell_price);
   if (!t.preview) html += `<div class="tl tl-flavor">Details appear after the collector looks this item up.</div>`;
+  const hint = hintCopy(t.hint);
   html += `<div class="tip-foot"><div class="tip-foot-title">In the ${esc(factionName(t.house))} auction house</div>
     <div class="row"><span>Buyout</span>${money(t.min)}</div>
     <div class="row"><span>Market value</span>${money(t.fair)}</div>
     <div class="tip-avail">${t.available ? `${count(t.available)} available` : "None listed now"}</div>${
-      hintCopy(t.hint) ? `<div class="tip-hint hint-${esc(t.hint.kind)}"><b>${hintCopy(t.hint).label}</b> · ${esc(hintCopy(t.hint).short)}</div>` : ""}</div>`;
+      hint ? `<div class="tip-hint hint-${esc(t.hint.kind)}"><b>${hint.label}</b> · ${esc(hint.short)}</div>` : ""}</div>`;
   return html;
 }
 const itemTips = new Map(); // key → { at, p }: prices change every scan, so entries expire
@@ -347,7 +348,7 @@ async function renderItem(id, variant) {
     view.innerHTML = `<a class="back" href="#/browse">← Back to the auction house</a>` + `<div class="panel">${emptyState("Item not found", esc(err.message))}</div>`;
     return;
   }
-  const it = item.item, h = item.house;
+  const it = item.item, h = item.house, hint = hintCopy(it.hint);
   if (state.classes) renderBrowse();
   else api(`/api/items?house=${state.house}&limit=1`).then((d) => renderBrowse(d.classes, d.all_count)).catch(() => {});
   const sub = [`<span class="q${it.quality}">${QUALITY[it.quality] || ""}</span>`, it.ilvl ? `Item level <b>${it.ilvl}</b>` : "",
@@ -359,7 +360,7 @@ async function renderItem(id, variant) {
       <div><h2 class="q${it.quality}">${esc(it.name)}${it.variant ? ` <small class="item-sub">${esc(it.variant)}</small>` : ""}</h2><div class="meta">${sub.join("<span aria-hidden='true'>◆</span>")}</div></div>
       <div class="best"><small>Lowest buyout · ${factionName(h.faction)}</small>${money(it.min, { zero: "Not listed" })}</div>
     </section>
-    ${hintCopy(it.hint) ? `<div class="hint-bar hint-${esc(it.hint.kind)}" role="note"><b>${hintCopy(it.hint).label}</b><span>${esc(hintCopy(it.hint).body)}</span></div>` : ""}
+    ${hint ? `<div class="hint-bar hint-${esc(it.hint.kind)}" role="note"><b>${hint.label}</b><span>${esc(hint.body)}</span></div>` : ""}
     <dl class="stats">
       <div class="stat"><dt>Lowest buyout</dt><dd>${money(it.min, { zero: "Not listed" })}<span class="note">${factionName(h.faction)} auction house</span></dd></div>
       <div class="stat"><dt>Market value</dt><dd>${money(it.fair)}<span class="note">cheapest 20% of units, 7-day median</span></dd></div>

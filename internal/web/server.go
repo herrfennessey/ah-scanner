@@ -264,10 +264,16 @@ func (s *Server) buildRows(ctx context.Context, houseID int64) ([]ItemRow, error
 	if err != nil {
 		return nil, err
 	}
-	faction := ""
-	for _, h := range s.Cfg.Houses {
+	// Resolved houses, so a house configured by faction alone (id 0) still finds its odds.
+	var house House
+	hs, err := s.houseList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range hs {
 		if h.ID == houseID {
-			faction = h.Faction
+			house = h
+			break
 		}
 	}
 	daily, _, err := report.LoadDaily(ctx, s.Store.DB, houseID, 7, now)
@@ -297,10 +303,9 @@ func (s *Server) buildRows(ctx context.Context, houseID int64) ([]ItemRow, error
 			row.SoldEst, row.SoldLo, row.SoldHi = d.SoldEst, d.SoldLo, d.SoldHi
 			row.SellThru = d.SellThrough()
 			row.Volatile = d.Volatile()
-			if d.Fair > 0 { // judged against the item's own history only
-				row.Hint = report.MarketHint(faction, report.HintInput{P20: c.p20, PrevP20: recent[k].p20, Listed: c.listed,
-					Fair: d.Fair, UsualListed: d.Listed, SoldPerDay: d.SoldLo})
-			}
+			// Judged against the item's own history only (d.Fair, not the p20 fallback above).
+			row.Hint = report.MarketHint(house.Faction, report.HintInput{P20: c.p20, PrevP20: recent[k].p20, Listed: c.listed,
+				Fair: d.Fair, UsualListed: d.Listed, SoldPerDay: d.SoldLo, Untracked: !house.Tracked})
 		}
 		if p, ok := prev[k]; ok && p.p20 > 0 && c.p20 > 0 {
 			ch := float64(c.p20)/float64(p.p20) - 1

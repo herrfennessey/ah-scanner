@@ -36,6 +36,7 @@ type HintInput struct {
 	Fair         int64   // 7-day market value (median p20)
 	UsualListed  float64 // average units listed per day
 	SoldPerDay   float64 // certain sales per day (floor)
+	Untracked    bool    // price-only house: sales aren't known, so never "slow"
 }
 
 // Hint says whether to sell into the market now, chase it down, hold, or stop reposting.
@@ -74,7 +75,7 @@ func MarketHint(house string, in HintInput) *Hint {
 		h.Kind, h.Odds, h.Piling = "chase", odds["chase"], true
 		return h
 	}
-	if in.SoldPerDay <= 0 || float64(in.Listed)/in.SoldPerDay > slowClearDays {
+	if !in.Untracked && (in.SoldPerDay <= 0 || float64(in.Listed)/in.SoldPerDay > slowClearDays) {
 		h.Kind = "slow"
 		if in.SoldPerDay > 0 {
 			h.ClearDays = math.Round(float64(in.Listed)/in.SoldPerDay*10) / 10
