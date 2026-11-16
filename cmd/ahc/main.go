@@ -106,6 +106,10 @@ func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*fl
 }
 
 func run(ctx context.Context, cmd string, args []string) error {
+	if cmd == "collect" || cmd == "once" || cmd == "serve" {
+		// First, so a build that fails on config or the database still says which it was.
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Info("ahc starting", "version", version.String(), "cmd", cmd)
+	}
 	defaults := map[string][2]float64{"movers": {7, 20}, "deals": {7, 5}, "item": {14, 0}, "sell": {14, 0}, "rollup": {3, 0}}
 	d := defaults[cmd]
 	if d[0] == 0 {
@@ -146,12 +150,15 @@ func run(ctx context.Context, cmd string, args []string) error {
 
 	switch cmd {
 	case "collect", "once":
-		log.Info("ahc starting", "version", version.String(), "cmd", cmd)
 		if err := cfg.RequireCredentials(); err != nil {
 			return err
 		}
 		status := collector.LoadStatus(cfg.StatusPath())
 		status.Version = version.String()
+		// Now, not after the first cycle, so the Collector page shows the new build at once.
+		if err := status.Save(cfg.StatusPath()); err != nil {
+			log.Warn("status", "err", err)
+		}
 		c := &collector.Collector{Cfg: cfg, Store: st, Log: log, Status: status,
 			API: blizzard.New(cfg.APIBase, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, cfg.Locale, log)}
 		if err := c.Setup(ctx); err != nil {
@@ -182,7 +189,6 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		return err
 	case "serve":
-		fmt.Fprintln(os.Stderr, "ahc", version.String(), "serving")
 		addr := cfg.Listen
 		if addr == "" {
 			addr = ":4653"

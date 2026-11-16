@@ -80,10 +80,11 @@ One Go binary, one SQLite file, one Docker container on the NUC.
 ## Versions and releases
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (see
-`AGENTS.md`). Each push to `main` runs semantic-release, which tags a new version (`feat` →
-minor, `fix` → patch, breaking → major) and creates a GitHub release; the image is pushed as
-`latest`, `sha-<commit>` and `v<version>`. Pin a release with `IMAGE_TAG=v1.2.3` in the NUC's
-`.env`.
+`AGENTS.md`). Each push to `main` works out the next version with go-semantic-release (`feat` →
+minor, `fix` → patch, breaking → major), builds and pushes the image, then tags the commit and
+publishes a GitHub release. Every image is pushed as `latest` and `sha-<commit>`; a release's
+image also as `v<version>`, which you can pin with `IMAGE_TAG=v1.2.3` in the NUC's `.env`.
+Pushes with nothing to release are built as `git describe` versions (`v1.2.3-4-gabc1234`).
 
 The running build logs `ahc starting` with its version, `ahc version` prints it, and the
 Collector page shows it.
