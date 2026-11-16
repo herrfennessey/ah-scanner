@@ -183,6 +183,9 @@ type ItemRow struct {
 	Change24   *float64 `json:"change_24h"`
 	Volatile   bool     `json:"volatile"`
 	MarketGold int64    `json:"market_gold"`
+	// Hint: sell into a stretched price, chase a falling one, hold a steady one, or stop
+	// reposting a slow one. Nil when nothing stands out or there's no history yet.
+	Hint *report.Hint `json:"hint,omitempty"`
 }
 
 type itemMeta struct {
@@ -257,6 +260,16 @@ func (s *Server) buildRows(ctx context.Context, houseID int64) ([]ItemRow, error
 	if err != nil {
 		return nil, err
 	}
+	recent, err := statsAt(ctx, s.Store.DB, houseID, now.Add(-3*time.Hour).Unix())
+	if err != nil {
+		return nil, err
+	}
+	faction := ""
+	for _, h := range s.Cfg.Houses {
+		if h.ID == houseID {
+			faction = h.Faction
+		}
+	}
 	daily, _, err := report.LoadDaily(ctx, s.Store.DB, houseID, 7, now)
 	if err != nil {
 		return nil, err
@@ -284,6 +297,10 @@ func (s *Server) buildRows(ctx context.Context, houseID int64) ([]ItemRow, error
 			row.SoldEst, row.SoldLo, row.SoldHi = d.SoldEst, d.SoldLo, d.SoldHi
 			row.SellThru = d.SellThrough()
 			row.Volatile = d.Volatile()
+			if d.Fair > 0 { // judged against the item's own history only
+				row.Hint = report.MarketHint(faction, report.HintInput{P20: c.p20, PrevP20: recent[k].p20, Listed: c.listed,
+					Fair: d.Fair, UsualListed: d.Listed, SoldPerDay: d.SoldLo})
+			}
 		}
 		if p, ok := prev[k]; ok && p.p20 > 0 && c.p20 > 0 {
 			ch := float64(c.p20)/float64(p.p20) - 1

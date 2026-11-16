@@ -53,6 +53,18 @@ above market value, nor on Blackwater above the dearer of the Horde and Alliance
 
 Hovering any item icon shows its in-game tooltip, from the item API, with this house's prices.
 
+Item pages (and the hover tooltip) carry a **hold or chase** hint, judged against the item's own
+7-day history on that house (`internal/report/hint.go`):
+
+| Hint | When | Backtest, Horde (Blackwater) |
+|---|---|---|
+| Sell now | priced ≥1.25× its usual level | ≥1.5×: 87% (69%) fell 10%+ within 12 h; 1.25–1.5×: 68% (53%) |
+| Chase it | price down 7%+ in ~3 h while listings are 1.3× usual | 59% (50%) fell another 10%+ |
+| Slow | what's listed takes 3+ days of sales to clear | — (each cancel loses a deposit) |
+| Hold | steady at its usual price | 71% (58%) stayed within 10% |
+
+The odds come from about two days of history; rerun the backtest as it grows.
+
 Plus **Browse** (every item, price history, when-to-post heatmap) and the same data as MCP
 tools for Claude at `/mcp`.
 
