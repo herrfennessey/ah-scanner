@@ -77,6 +77,17 @@ tools for Claude at `/mcp`.
 
 One Go binary, one SQLite file, one Docker container on the NUC.
 
+## Versions and releases
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (see
+`AGENTS.md`). Each push to `main` runs semantic-release, which tags a new version (`feat` →
+minor, `fix` → patch, breaking → major) and creates a GitHub release; the image is pushed as
+`latest`, `sha-<commit>` and `v<version>`. Pin a release with `IMAGE_TAG=v1.2.3` in the NUC's
+`.env`.
+
+The running build logs `ahc starting` with its version, `ahc version` prints it, and the
+Collector page shows it.
+
 ## How it works
 
 Blizzard publishes each house once an hour at a stable second past the hour (about :18:50).
