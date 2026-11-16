@@ -57,7 +57,9 @@ function change(v) {
 }
 function icon(row, big) {
   const style = row.icon ? ` style="background-image:url('${esc(row.icon)}')"` : "";
-  return `<span class="icon ${big ? "big" : ""} q${row.quality ?? 1}"${style} aria-hidden="true"></span>`;
+  // Icons with an item id show the in-game tooltip on hover, focus or tap (itemTip below).
+  const tipAttrs = row.id ? ` data-tip-item="${esc(row.id)}" tabindex="0" role="img" aria-label="${esc(row.name || "Item")}: show details"` : ` aria-hidden="true"`;
+  return `<span class="icon ${big ? "big" : ""} q${row.quality ?? 1}"${style}${tipAttrs}></span>`;
 }
 function crest(faction) {
   if (faction === "horde") {
@@ -80,7 +82,82 @@ function showTip(html, ev) {
   if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - 14;
   tip.style.left = `${x}px`; tip.style.top = `${y}px`;
 }
-const hideTip = () => { tip.hidden = true; };
+const hideTip = () => { tip.hidden = true; tip.classList.remove("item-tip"); };
+
+/* item tooltips: Blizzard's preview_item rendered like the in-game tooltip */
+const QUALITY_TYPES = ["POOR", "COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY"];
+const qualityOf = (q) => Math.max(0, QUALITY_TYPES.indexOf(q?.type));
+const ds = (o) => o?.display_string || o?.display?.display_string || "";
+const rgb = (c) => c ? `rgb(${c.r},${c.g},${c.b})` : "";
+function previewLines(p) {
+  const out = [];
+  const line = (text, cls = "", style = "") => text && out.push(`<div class="tl ${cls}"${style ? ` style="color:${style}"` : ""}>${esc(text)}</div>`);
+  line(p.level?.display_string, "tl-ilvl");
+  line(p.binding?.name);
+  line(p.unique_equipped);
+  const slot = p.inventory_type?.type !== "NON_EQUIP" ? p.inventory_type?.name : "";
+  const sub = p.is_subclass_hidden ? "" : p.item_subclass?.name;
+  if (slot || sub) out.push(`<div class="tl tl-split"><span>${esc(slot)}</span><span>${esc(sub)}</span></div>`);
+  if (p.weapon) {
+    out.push(`<div class="tl tl-split"><span>${esc(ds(p.weapon.damage))}</span><span>${esc(ds(p.weapon.attack_speed))}</span></div>`);
+    line(ds(p.weapon.dps));
+  }
+  line(ds(p.armor));
+  for (const st of p.stats || []) line(ds(st), "", rgb(st.display?.color));
+  line(ds(p.durability));
+  for (const r of Object.values(p.requirements || {})) line(ds(r));
+  for (const sp of p.spells || []) line(sp.description, "tl-use");
+  if (p.description) line(p.description, p.recipe ? "tl-use" : "tl-flavor");
+  return out.join("");
+}
+function coins(sp) {
+  return sp?.value ? `<div class="tl tl-sell">Sell Price: ${money(sp.value)}</div>` : "";
+}
+function renderItemTip(t) {
+  const p = t.preview || {};
+  const q = t.preview ? qualityOf(p.quality) : t.quality;
+  let html = `<div class="tip-head">${icon({ icon: t.icon, quality: q })}<span class="tip-name q${q}">${esc(p.name || t.name)}</span></div>`;
+  html += previewLines(p);
+  if (p.recipe?.item) {
+    const r = p.recipe.item;
+    html += `<div class="tip-sep"></div><div class="tl q${qualityOf(r.quality)}">${esc(r.name)}</div>${previewLines(r)}`;
+    if (p.recipe.reagents_display_string) html += `<div class="tl">Reagents: ${esc(p.recipe.reagents_display_string)}</div>`;
+  }
+  html += coins(p.sell_price);
+  if (!t.preview) html += `<div class="tl tl-flavor">Details appear after the collector looks this item up.</div>`;
+  html += `<div class="tip-foot"><div class="tip-foot-title">In the ${esc(factionName(t.house))} auction house</div>
+    <div class="row"><span>Buyout</span>${money(t.min)}</div>
+    <div class="row"><span>Market value</span>${money(t.fair)}</div>
+    <div class="tip-avail">${t.available ? `${count(t.available)} available` : "None listed now"}</div></div>`;
+  return html;
+}
+const itemTips = new Map();
+let tipFor = null;
+async function itemTip(el, ev) {
+  const id = el.dataset.tipItem;
+  tipFor = el;
+  const key = `${id}/${state.house}`;
+  if (!itemTips.has(key)) itemTips.set(key, api(`/api/item/${id}/tooltip?house=${encodeURIComponent(state.house)}`).catch((err) => { itemTips.delete(key); throw err; }));
+  let t;
+  try { t = await itemTips.get(key); } catch { return; }
+  if (tipFor !== el) return; // the pointer moved on while loading
+  const r = el.getBoundingClientRect();
+  tip.classList.add("item-tip"); // before showTip, so it is measured at its final width
+  showTip(renderItemTip(t), ev?.clientX != null ? ev : { clientX: r.right, clientY: r.top });
+}
+function endItemTip() { tipFor = null; hideTip(); }
+document.addEventListener("mouseover", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el) itemTip(el, e); });
+document.addEventListener("mouseout", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el && !el.contains(e.relatedTarget)) endItemTip(); });
+document.addEventListener("focusin", (e) => { const el = e.target.closest?.("[data-tip-item]"); if (el) itemTip(el); });
+document.addEventListener("focusout", (e) => { if (e.target.closest?.("[data-tip-item]")) endItemTip(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && tipFor) endItemTip(); });
+// Touch: a tap on an icon toggles its tooltip instead of following the row's link.
+document.addEventListener("click", (e) => {
+  const el = e.target.closest?.("[data-tip-item]");
+  if (!el || !matchMedia("(hover: none)").matches) return;
+  e.preventDefault(); e.stopPropagation();
+  if (tipFor === el) endItemTip(); else itemTip(el, e);
+}, true);
 
 /* houses + hero */
 async function loadHouses() {
