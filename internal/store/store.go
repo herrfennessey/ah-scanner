@@ -295,7 +295,8 @@ func (s *Store) ItemsNeedingNames(ctx context.Context, limit int, retryAfter tim
 			SELECT item_id FROM auction WHERE closed_at IS NULL
 			UNION SELECT item_id FROM item_snapshot WHERE snapshot_id IN (SELECT MAX(id) FROM snapshot GROUP BY house_id, kind)
 		) a LEFT JOIN item i ON i.id = a.item_id
-		WHERE (i.id IS NULL OR ((i.name IS NULL OR i.icon IS NULL OR i.tooltip IS NULL OR i.looked_up_at IS NULL) AND COALESCE(i.looked_up_at,0) < ?))
+		WHERE (i.id IS NULL OR (i.name IS NOT NULL AND i.tooltip IS NULL)
+			OR ((i.name IS NULL OR i.icon IS NULL OR i.looked_up_at IS NULL) AND COALESCE(i.looked_up_at,0) < ?))
 		ORDER BY i.id IS NULL DESC, i.name IS NULL DESC, i.icon IS NULL DESC LIMIT ?`, cutoff, limit) // new items before the tooltip backfill
 	if err != nil {
 		return nil, err
@@ -370,6 +371,22 @@ func (s *Store) HaveIcons(ctx context.Context) (map[int64]bool, error) {
 		m[id] = true
 	}
 	return m, rows.Err()
+}
+
+// MissingTooltips returns those of ids with no stored tooltip (including unknown items), in order.
+func (s *Store) MissingTooltips(ctx context.Context, ids []int64) ([]int64, error) {
+	var out []int64
+	for _, id := range ids {
+		var has bool
+		err := s.DB.QueryRowContext(ctx, `SELECT tooltip IS NOT NULL FROM item WHERE id=?`, id).Scan(&has)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if !has {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // ItemTooltip returns an item's stored preview_item JSON, or nil if there is none.

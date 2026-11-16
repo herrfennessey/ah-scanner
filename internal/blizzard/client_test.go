@@ -257,3 +257,25 @@ func TestQuestRep(t *testing.T) {
 		t.Fatalf("rep %d err %v", rep, err)
 	}
 }
+
+func TestItemNotFoundRecordsNoTooltip(t *testing.T) {
+	_, c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request, _ int32) { w.WriteHeader(404) })
+	it, err := c.Item(context.Background(), 1, []string{"static-forever-eu"}, true)
+	if !IsNotFound(err) || string(it.Tooltip) != "null" {
+		t.Fatalf("tooltip %q err %v", it.Tooltip, err)
+	}
+}
+
+func TestItemTransientFailureIsNotRecordedAsAbsent(t *testing.T) {
+	_, c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request, _ int32) {
+		if r.URL.Query().Get("namespace") == "static-forever-eu" {
+			w.WriteHeader(500) // transient in the first namespace
+			return
+		}
+		w.WriteHeader(404)
+	})
+	it, err := c.Item(context.Background(), 1, []string{"static-forever-eu", "static-classic1x-eu"}, true)
+	if err == nil || it.Tooltip != nil {
+		t.Fatalf("a transient failure must stay retryable: tooltip %q err %v", it.Tooltip, err)
+	}
+}

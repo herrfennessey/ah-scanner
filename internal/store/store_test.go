@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -208,5 +209,28 @@ func TestItemsNeedingNamesPutsUnnamedFirst(t *testing.T) {
 	ids, err := st.ItemsNeedingNames(ctx, 1, time.Hour)
 	if err != nil || len(ids) != 1 || ids[0] != 20 {
 		t.Fatalf("the never-seen item must come first: %v %v", ids, err)
+	}
+}
+
+func TestItemsNeedingNamesSkipsRetryWaitForMissingTooltip(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	st.ApplySnapshot(ctx, Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: 1, SHA256: "a"},
+		[]listing.Listing{{AuctionID: 1, ItemID: 5, Quantity: 1, UnitPrice: 10, TimeLeft: listing.Long}})
+	st.SetItem(ctx, Item{ID: 5, Name: "Looked up by an older version", Icon: "x.jpg"}) // looked_up_at = now, no tooltip
+	ids, err := st.ItemsNeedingNames(ctx, 10, 24*time.Hour)
+	if err != nil || len(ids) != 1 || ids[0] != 5 {
+		t.Fatalf("a named item with no tooltip must not wait out the retry period: %v %v", ids, err)
+	}
+}
+
+func TestMissingTooltips(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	st.SetItem(ctx, Item{ID: 1, Name: "A", Tooltip: json.RawMessage(`{}`)})
+	st.SetItem(ctx, Item{ID: 2, Name: "B"})
+	got, err := st.MissingTooltips(ctx, []int64{1, 2, 3})
+	if err != nil || !reflect.DeepEqual(got, []int64{2, 3}) {
+		t.Fatalf("%v %v", got, err)
 	}
 }
