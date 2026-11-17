@@ -1,60 +1,94 @@
 # ah-scanner (`ahc`)
 
 A private price and sell-through history for the WoW Forever **EU PvP Horde and Blackwater**
-auction houses, built from Blizzard's API. The web UI opens on **Flips**: small trades sized
-to the gold you have (a slider, default 40g) and how you trade (regular by default):
+auction houses, built from Blizzard's API. The web UI opens on **Flips**: trades sized to the
+gold you have (a slider, default 40g) and how often you trade (casual by default), most expected
+profit first.
 
-- **Relist:** listings dumped well under the next price in a house; buy them, relist just under.
-- **Cross:** cheaper on Blackwater than it reliably sells for on Horde.
-- **Alliance:** cheaper on Horde than Alliance players pay at home, for items the Alliance buys
-  several times a day; sold to them on Blackwater.
+| Column | Meaning |
+|--------|---------|
+| Buy from, Sell at | the houses: Horde, or Neutral (Blackwater) |
+| Buy at | how many to buy, up to what price each |
+| List at | the price to post at, and the listing length |
+| Profit | expected profit (below) |
+| Play | what to do once it's posted: hold, check in or camp |
+| Cancel if position > | check in: relist under the cheapest when more units than this are listed cheaper than yours; camp: when undercut; hold: never |
 
-How you trade is how often you come back to relist what was undercut, and so how long a flip
-has to work without you. Your units plus everything others list within 10% of your price must
-sell out within the window, at the rate buyers lately paid your price or more:
+Three routes: buy underpriced listings and relist them in the same house; buy on Neutral and
+sell on Horde; or buy on Horde and sell on Neutral to Alliance players, for less than they pay
+at home (only for items the Alliance buys several times a day). On Neutral, the resale is never
+above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead.
 
-| Style | Visits | Listing | Window | Gold per flip | Min return | Swinging or sliding prices | Sells on |
-|-------|--------|---------|--------|---------------|------------|----------------------------|----------|
-| active | about hourly | 8h | 12 h | 50% | 15% | yes, priced where the slide will be | Horde, Blackwater |
-| regular (default) | every ~5 h | 8h | 1 day | 40% | 20% | no | Horde, Blackwater |
-| away | once, ~12 h later | 24h | 12 h | 30% | 25% | no | Horde only |
+### Styles and plays
 
-Every flip is judged on what buyers do, not what sellers ask:
+| Play | What you do | Listing | Window |
+|------|-------------|---------|--------|
+| **hold** | post and leave it, even when undercut: commodities sell the cheaper listings first, then yours | 24h | 1 day |
+| **check in** | look every ~5 h; relist when the queue cheaper than yours is longer than buyers take before your listing runs out | 24h | 1 day |
+| **camp** | check hourly, relist whenever undercut; the only play for swinging or sliding prices | 8h | 12 h |
 
-- The resale is capped at the **median price paid** over the last 24 hours, so a 7-day market
-  value left over from before a crash can't make a dump look like a bargain.
-- At least **2 purchases at or above the resale price** in the last 12 hours, and the amount
-  bought must fit the purchases at or above that price over the last 2 days.
+The check-in queue is the units buyers take a day near the floor times the hours left on the
+listing (19 at the first visit): `RelistQueue` in `internal/report/flips.go`. The page shows it
+for the first visit; it shrinks as the listing runs down.
+
+| Style | Visits | Plays | Gold per flip | Min return | Sells on |
+|-------|--------|-------|---------------|------------|----------|
+| active | about hourly | hold, check in, camp | 50% | 20% | Horde, Neutral |
+| casual (default) | 4–5 times a day | hold, check in | 40% | 20% | Horde, Neutral |
+| away | once or twice a day | hold | 30% | 25% | Horde only |
+
+Each item is planned with every play the style allows and the one with the most expected profit
+is kept (a camp's counted at 80%: that's what camping delivered in the backtest, against ~99% for
+holds), so active always sees at least what casual does, and casual what away does (a test
+checks this over random markets). Old names still work: `regular` and the risk levels
+`high`/`medium`/`low` map to active, casual and away.
+
+### How a flip is judged
+
+On what buyers do, not what sellers ask:
+
+- The resale is capped at the **median price paid** over the last 24 hours, so a market value
+  left over from before a crash can't make a dump look like a bargain.
+- At least **2 purchases at or above the resale price** in the last 12 hours. The amount bought
+  must fit the purchases at or above that price over the last 2 days, and your units plus
+  everything listed within 10% of your price must sell within the play's window.
 - **Sliding markets:** an asking price falling over 10% a day (the median ask, by Theil-Sen, so
-  one dump can't trigger it) is left to active traders; a resale more than 15% under market
-  value counts as a slide too.
-- **Sell chance** is per item: the share of its listings that were the cheapest when posted
-  (`auction.front`) and sold before the next visit, blended with the house average when the
-  item has few. Busy markets full of undercutters score low even if they sell a lot.
+  one dump can't trigger it), or a resale more than 15% under market value, is left to camping.
+- **Sell chance** and **undercut chance** are measured per item from listings that were the
+  cheapest when posted (`auction.front`): the share that sold within one round of the play (a
+  hold's 24 hours, or until the next visit), and the share that a cheaper listing undercut in
+  that time while still up. Items with few such listings lean on the house average.
 
-**Expected profit** weighs the style's visits: each listing round sells with that chance; one
-that doesn't loses the deposit and relists one typical undercut (about 3%) lower. Stock still
-unsold at the end of the window is valued at the price buyers are paying then, not assumed sold.
-Deposits are 20% of the vendor price with a 1s minimum per auction (confirmed against
-Journalator posting logs), 5× on Blackwater (`deposit_factor`); how the deposit grows with
-listing length isn't known yet, and most flipped items sit at the 1s minimum anyway. The cut is
-5% on faction houses and 15% on Blackwater.
+**Expected profit** weighs the play's rounds by those chances. Looking is free: a round that
+doesn't sell costs a relist (the deposit, and a typical undercut of about 3%) only when it was
+undercut, or the deposit when the listing ran out; holds never relist. Stock still unsold at the
+end of the window is valued at what buyers are paying then. It's never shown above the profit if
+everything sells (which counts one lost deposit). Deposits are 20% of the vendor price with a 1s
+minimum per auction (confirmed against Journalator posting logs), 5× on Neutral
+(`deposit_factor`); the cut is 5% on faction houses and 15% on Neutral.
+
+Flips are ranked by expected profit, not profit per day: gold sitting idle isn't the limit, and
+the chance it sells is already weighed in. **Going fast** marks underpriced listings of the kind
+most likely to be gone within the hour (about half are). The page updates itself after every
+scan: new flips get a badge, a toast appears and the tab title shows the count.
 
 What a scan can see: a commodity listing that loses units, or vanishes with nothing cheaper
 left, was bought (commodities fill cheapest first). Vanished gear may have been cancelled, so it
 counts only if no cheaper copy outlasted it. Anything listed and bought within one scan
 interval is never seen, so demand is, if anything, undercounted.
 
-The Flips page updates itself after every scan: new flips get a badge, a toast appears and the
-tab title shows the count. **Going fast** marks the listings most likely to be gone within the
-hour; about half of all underpriced listings are. Flips are ranked by expected profit per day
-your gold is tied up. On Blackwater, resale is never above the dearer of the Horde and Alliance
-prices (every Blackwater buyer can buy at home instead).
+### Backtest and local preview
 
 `ahc backtest -days 4` replays the planner at every past scan, with the inputs as they were then,
-and scores each flip per style: the resale fills only from buyers who really paid at least its
-price afterwards, unsold stock is relisted under the cheapest listing at each visit (never under
-cost) and valued at the floor when the window ends. `-csv` lists every trade.
+and scores each flip per style and play: the resale fills only from buyers who really paid at
+least its price afterwards, and is played as planned (a hold left alone; a check-in relisted under
+the cheapest when the recorded queue cheaper than it is too long; a camp relisted whenever
+undercut; never under cost). Unsold stock is valued at the floor when the window ends. `-queue 0.5`
+or `-queue 2` scales the check-in queue to test the rule. `-csv` lists every trade.
+
+To look at the UI without deploying, run it on a copy of the database: point a config's
+`data_dir` at the copy and run `ahc serve -rebuild`. `-rebuild` recomputes the flips from the
+copy first (the collector normally does that after each scan), using the houses stored in it.
 
 Each item page has a **price distribution**: units listed at each price above the axis, units
 bought over the last 48 hours below it, market value and the median paid marked, and the cost of
@@ -142,7 +176,7 @@ ahc collect                 run forever on the config schedules; serves the web 
 ahc once                    one collection cycle + today's rollup
 ahc probe [-all]            check credentials and endpoints, save raw samples, print fields seen
 ahc rollup [-days N]        recompute daily rows
-ahc serve                   web UI + /mcp only
+ahc serve [-rebuild]        web UI + /mcp only; -rebuild recomputes the flips first (a db copy)
 ahc health                  exit 1 if failing or stale (Docker healthcheck)
 ahc replay -out x.db        rebuild a database from the raw bodies (48 h) with the current rules
 
@@ -150,6 +184,7 @@ ahc sell "Heavy Quiver"     when and at what price to post
 ahc movers -house blackwater
 ahc deals -min-discount 0.4
 ahc item 4304 -days 30
+ahc backtest -days 3        replay the flip planner and score it (-gold, -every, -queue, -csv)
 ```
 
 Report flags: `-house horde|blackwater`, `-days N`, `-min-sold N`, `-csv`, `-limit N`.

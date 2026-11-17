@@ -714,23 +714,32 @@ const toGold = (pos) => Math.round(GOLD_MIN * Math.pow(GOLD_MAX / GOLD_MIN, pos 
 const toPos = (gold) => Math.round(1000 * Math.log(gold / GOLD_MIN) / Math.log(GOLD_MAX / GOLD_MIN));
 // Mirrors styleProfiles in internal/report/flips.go.
 const STYLE = {
-  active: { label: "Active", share: 0.5, note: "You check about every hour and relist whenever you're undercut. Post 8h listings; everything should be gone within 12 hours." },
-  regular: { label: "Regular", share: 0.4, note: "You check 4–5 times a day. Post 8h listings; everything should be gone within a day." },
-  away: { label: "Away", share: 0.3, note: "You post once and come back in about 12 hours (morning, then evening). Post 24h listings. Horde only, steady markets only." },
+  active: { label: "Active", share: 0.5, note: "About hourly · hold, check in, camp" },
+  casual: { label: "Casual", share: 0.4, note: "4–5 times a day · hold, check in" },
+  away: { label: "Away", share: 0.3, note: "Once or twice a day · hold" },
 };
-// The old risk levels, kept in the browser, map to the nearest style.
-const OLD_RISK = { high: "active", medium: "regular", low: "away" };
+// Older names, kept in the browser, map to the nearest style.
+const OLD_STYLE = { high: "active", medium: "casual", low: "away", regular: "casual" };
+// Mirrors playProfiles: what to do with the listing once it's up.
+const PLAY = {
+  hold: ["Hold", "Leave it up, even when undercut."],
+  check_in: ["Check in", "Look every few hours; relist under the cheapest when more than this many are listed cheaper than yours."],
+  camp: ["Camp", "Check hourly; relist under the cheapest whenever undercut."],
+};
+const houseTag = (h) => `<span class="house-tag house-${esc(h)}">${h === "blackwater" ? "Neutral" : esc(h)}</span>`;
+const cancelIf = (f) => f.play === "hold" ? "—" : f.play === "check_in" && f.relist_queue ? count(f.relist_queue) : "undercut";
 
 function renderFlips() {
   const gold = Math.min(GOLD_MAX, Math.max(GOLD_MIN, store.get("gold", 40)));
-  let style = store.get("style", OLD_RISK[store.get("risk", "")] || "regular");
-  if (!Object.hasOwn(STYLE, style)) style = "regular";
+  let style = store.get("style", "") || OLD_STYLE[store.get("risk", "")] || "casual";
+  style = OLD_STYLE[style] || style;
+  if (!Object.hasOwn(STYLE, style)) style = "casual";
   $("#view").innerHTML = `
     <section class="panel flips-panel">
       <div class="flips-head">
         <div>
           <h2 class="panel-title">Flips</h2>
-          <p class="flips-lede">Small trades for the gold you have and how often you're at the auction house. Updates itself after every scan; expected profit allows for undercuts, lost deposits and stock that doesn't sell.</p>
+          <p class="flips-lede">Trades for your gold and how often you play. Updates after every scan.</p>
         </div>
         <div class="gold-control">
           <label for="gold-num">Your gold</label>
@@ -750,18 +759,15 @@ function renderFlips() {
       <details class="rules">
         <summary>How flips are chosen</summary>
         <ul class="reasons">
-          <li><b>How you trade</b> is how often you come back to relist what was undercut: about hourly (active), every ~5 hours (regular), or once, about 12 hours later (away). Your units <i>plus</i> everything other sellers list within 10% of your price must sell within the window: 12 hours (active, away) or a day (regular).</li>
-          <li><b>Priced from what buyers pay, not what sellers ask.</b> The resale is capped at the median price actually paid over the last 24 hours, so a market value left over from before a crash can't make a dump look like a bargain. At least 2 purchases at or above your price in the last 12 hours are required, and the amount you buy must fit the recent purchases at or above that price.</li>
-          <li><b>Sliding markets:</b> if the asking price is falling more than 10% a day (measured so one dump can't trigger it), only active traders see the item, priced where the slide will be. A resale more than 15% under market value also counts as a slide.</li>
-          <li><b>Sell chance</b> is measured per item: the share of its listings that were the cheapest when posted and sold before your next visit. Busy items full of undercutters score low here even when they sell a lot. Items with few such listings lean on the house average.</li>
-          <li><b>Expected profit</b> weighs your visits: each listing round sells with that chance; one that doesn't loses the deposit and relists a typical undercut (about 3%) lower. Stock still unsold when the window ends is valued at the price buyers are paying then, not assumed sold. Deposits are 20% of the vendor price, 1s minimum per auction, 5× on Blackwater.</li>
-          <li><b>What a scan can't see:</b> a vanished piece of gear may have been cancelled, so it only counts as sold if no cheaper copy outlasted it. Anything listed and bought within the same hour is never seen, so demand is, if anything, undercounted.</li>
-          <li>One flip uses at most 50%, 40% or 30% of your gold, and needs at least a 15%, 20% or 25% return after the AH cut (5% Horde, 15% Blackwater). Items whose price swings are left to active traders.</li>
-          <li>Flips are ranked by expected profit per day your gold is tied up, so quick, likely sales come first.</li>
-          <li><b>Going fast:</b> about half of underpriced listings are gone within an hour of a scan; the badge marks the kind that goes fastest. Buy soon after a scan or skip it.</li>
-          <li><b>Relist:</b> buy listings dumped well below the next price in a house, then relist just under that next price. It never buys out a market.</li>
-          <li><b>Cross:</b> buy on Blackwater, sell on Horde. Away only sells on Horde: Blackwater has a 15% cut, a 5× deposit, a sixth of Horde's buyers and faster undercuts.</li>
-          <li><b>Alliance</b> (active and regular): buy on Horde, sell on Blackwater at least 5% under what Alliance players pay at home, only for items the Alliance buys often. On Blackwater, never above what buyers pay at home.</li>
+          <li><b>Plays.</b> Hold: post 24h and leave it, even when undercut; commodities sell the cheaper listings first, then yours. Check in (casual, active): look every ~5h and relist under the cheapest when more units are listed cheaper than yours than the <b>Cancel if position</b> number, which is what buyers take before your listing runs out. Camp (active): check hourly and relist whenever undercut.</li>
+          <li>Each item is planned with every play your style allows and the most profitable one is shown, so active sees everything casual does, and casual everything away does.</li>
+          <li><b>Priced from what buyers pay.</b> The resale is capped at the median price paid over the last 24 hours, and needs at least 2 purchases at or above it in the last 12 hours. What you buy, plus everything listed within 10% of your price, must sell within a day (12 hours for camping).</li>
+          <li><b>Sliding or swinging prices</b> (asking price down over 10% a day, or a resale more than 15% under market value) are left to camping.</li>
+          <li><b>Profit</b> is expected profit: weighed by how often this item's cheapest listings sold, and were undercut, within one round of the play. A relist costs the deposit and about 3%; stock left unsold is valued at what buyers pay then. Hover it for the chance it all sells.</li>
+          <li>Ranked by profit. One flip uses at most 50%, 40% or 30% of your gold (active, casual, away) and needs a 20%, 20% or 25% return after the cut (5% Horde, 15% Neutral). Away sells on Horde only.</li>
+          <li>Neutral resale is never above the dearer of the Horde and Alliance prices. Horde → Neutral flips sell to Alliance players, only for items they buy often.</li>
+          <li><b>Going fast:</b> about half of underpriced listings are gone within an hour of a scan. Buy soon after a scan or skip it.</li>
+          <li>Gear only counts as sold if no cheaper copy outlasted it (it may have been cancelled). Anything listed and bought within the hour is never seen.</li>
         </ul>
       </details>
     </section>`;
@@ -874,22 +880,23 @@ async function loadFlips(gold, style, fromScan = false) {
     r.confidence === "good" ? "" : r.confidence === "early" ? " Early estimate: under 3 days of sales history." : " Fair estimate: under 10 days of history."}${
     r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Alliance flips are off."}</p>`;
   if (!r.flips.length) {
-    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g for ${STYLE[style].label.toLowerCase()} trading right now`, "That's a normal answer: nothing cheap enough sells fast enough, at a price buyers are paying. Checking more often (active) allows busier, faster-moving markets. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
+    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g for ${STYLE[style].label.toLowerCase()} trading right now`, "That's a normal answer: nothing cheap enough sells fast enough, at a price buyers are paying. Checking more often (active) adds camping, for busier, faster-moving markets. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
     return;
   }
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
-    <thead><tr><th>Item</th><th>Buy</th><th>Cost</th><th>Sell</th><th>Expected profit</th><th>Sold out in</th></tr></thead>
+    <thead><tr><th>Item</th><th>Buy from</th><th>Sell at</th><th>Buy at</th><th>List at</th><th>Profit</th><th>Play</th><th title="Units listed cheaper than yours">Cancel if position &gt;</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr class="${isNew(f) ? "is-new" : ""}">
-      <td><span class="kind kind-${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || esc(f.kind)}</span>${
-        isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
-        f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}
-        <a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a><span class="sub-num why">${esc(f.why)}</span></td>
-      <td data-label="Buy">${count(f.buy_units)} on ${factionName(f.buy_house)}<span class="sub-num">up to ${plain(f.buy_up_to_price)} each</span></td>
-      <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold${f.deposit_at_risk ? ` · ${plain(f.deposit_at_risk)} deposit` : ""}</span></td>
-      <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}, ${f.list_hours}h listing${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}${
-        f.recent_price ? ` · buyers paid ${plain(f.recent_price)} lately` : ""}${f.recent_sales_above ? ` · ${f.recent_sales_above} bought at this price or more in 12 h` : ""}</span></td>
-      <td data-label="Expected profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.sell_chance)} chance it sells before your next visit · ${pct(f.sold_out_chance)} it all sells in time · ${plain(f.profit_if_sold)} if it all sells · ${plain(f.profit_per_day)} a day</span></td>
-      <td data-label="Sold out in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}<span class="sub-num">${f.competing_units ? `${count(f.competing_units)} others listed near your price` : "no one else near your price"} · ${Math.round(f.sales_per_day)} sales a day</span></td></tr>`).join("")}</tbody>
+      <td><div class="item-cell">${icon({ id: f.item_id, name: f.name, icon: f.icon, quality: f.quality })}<div>
+        <a class="adv-item q${f.quality ?? 1}" href="#/item/${f.item_id}" title="${esc(f.why)}">${esc(f.name)}</a>${
+        isNew(f) || f.gone_soon >= 0.5 ? `<div class="flip-tags">${isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
+        f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}</div>` : ""}</div></div></td>
+      <td data-label="Buy from">${houseTag(f.buy_house)}</td>
+      <td data-label="Sell at">${houseTag(f.sell_house)}</td>
+      <td data-label="Buy at">${count(f.buy_units)} × ≤ ${money(f.buy_up_to_price)}</td>
+      <td data-label="List at">${money(f.sell_at)} <span class="dur">${f.list_hours}h</span></td>
+      <td data-label="Profit" class="pos" title="${pct(f.sold_out_chance)} chance it all sells · ${plain(f.profit_if_sold)} if it does">${money(f.expected_profit)}</td>
+      <td data-label="Play"><span class="play-name play-${esc(f.play)}" title="${esc(PLAY[f.play]?.[1] || "")}">${PLAY[f.play]?.[0] || esc(f.play)}</span></td>
+      <td data-label="Cancel if position >" class="num">${cancelIf(f)}</td></tr>`).join("")}</tbody>
   </table></div>${updated}`;
 }
 

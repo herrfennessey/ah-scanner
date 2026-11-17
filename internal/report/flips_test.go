@@ -13,7 +13,7 @@ var (
 
 func g(gold float64) int64 { return int64(gold * 10000) }
 
-func plan(items []FlipItem, gold float64) []Flip { return planRisk(items, gold, StyleRegular) }
+func plan(items []FlipItem, gold float64) []Flip { return planRisk(items, gold, StyleCasual) }
 
 func planRisk(items []FlipItem, gold float64, style Style) []Flip {
 	f, _, _ := PlanFlips(&FlipInputs{Houses: []FlipHouse{horde, bw, ally}, Items: items}, FlipOptions{Gold: g(gold), Style: style})
@@ -104,16 +104,16 @@ func TestAllianceRouteNeedsFastAllianceSales(t *testing.T) {
 	if f := planRisk([]FlipItem{mk(20, 3100)}, 40, StyleAway); len(f) != 0 {
 		t.Fatalf("away sells on Horde only: %+v", f)
 	}
-	f := planRisk([]FlipItem{mk(20, 3100)}, 40, StyleRegular)
+	f := planRisk([]FlipItem{mk(20, 3100)}, 40, StyleCasual)
 	if len(f) != 1 || f[0].Kind != "alliance" || f[0].SellAt != 2945 {
 		t.Fatalf("fast Alliance demand should pass: %+v", f)
 	}
 	// Same prices, but Alliance barely buys it: no flip, whatever Blackwater's price.
-	if f := planRisk([]FlipItem{mk(1, 3100)}, 40, StyleRegular); len(f) != 0 {
+	if f := planRisk([]FlipItem{mk(1, 3100)}, 40, StyleCasual); len(f) != 0 {
 		t.Fatalf("slow Alliance demand should block: %+v", f)
 	}
 	// Alliance cheaper at home than our buy price allows: no flip.
-	if f := planRisk([]FlipItem{mk(20, 1600)}, 40, StyleRegular); len(f) != 0 {
+	if f := planRisk([]FlipItem{mk(20, 1600)}, 40, StyleCasual); len(f) != 0 {
 		t.Fatalf("cheap Alliance should block: %+v", f)
 	}
 }
@@ -175,45 +175,45 @@ func TestSlowRecipeNeedsADay(t *testing.T) {
 			t.Fatalf("%s: a recipe with days of supply ahead of it is no flip: %+v", r, f)
 		}
 	}
-	// With only 4 competing at the price, a day's window (regular) takes it; the 12-hour
-	// windows of active and away don't (6 sell a day).
+	// With only 4 competing at the price, a day of buyers takes ours too: every style posts a
+	// 24h listing that can wait for them.
 	it.Houses["horde"].Book = []FlipLevel{{17700, 4}}
-	if f := planRisk([]FlipItem{it}, 40, StyleRegular); len(f) != 1 || f[0].Competing != 4 {
-		t.Fatalf("regular: %+v", f)
-	}
-	for _, r := range []Style{StyleActive, StyleAway} {
-		if f := planRisk([]FlipItem{it}, 40, r); len(f) != 0 {
+	for _, r := range Styles {
+		if f := planRisk([]FlipItem{it}, 40, r); len(f) != 1 || f[0].Competing != 4 {
 			t.Fatalf("%s: %+v", r, f)
 		}
 	}
 }
 
 func TestCompetitionShrinksTheBuy(t *testing.T) {
-	// Horde sells 400 a day (200 per 12 h); 70 are already listed just above our price, so an
-	// active flip (gone within 12 hours) may only add 130.
+	// Horde sells 400 a day; 70 are already listed just above our price, so a flip that should
+	// be gone within the day may only add 330.
 	it := FlipItem{Item: 7, Name: "Heavy Leather", Houses: map[string]*FlipStat{
 		"blackwater": {Fair: 300, Min: 100, Book: []FlipLevel{{100, 500}}},
 		"horde":      {Fair: 260, Min: 250, Sales: 500, SalesPerDay: 80, RobustPerDay: 400, Book: []FlipLevel{{250, 70}, {400, 900}}},
 	}}
 	f := planRisk([]FlipItem{it}, 40, StyleActive)
-	if len(f) != 1 || f[0].BuyUnits != 130 || f[0].Competing != 70 || f[0].DaysToSell != 0.5 {
+	if len(f) != 1 || f[0].BuyUnits != 330 || f[0].Competing != 70 || f[0].DaysToSell != 1 {
 		t.Fatalf("%+v", f)
 	}
 }
 
-func TestRankedByProfitPerDay(t *testing.T) {
+func TestRankedByExpectedProfit(t *testing.T) {
 	fast := FlipItem{Item: 8, Name: "Fast", Houses: map[string]*FlipStat{
 		"blackwater": {Fair: 300, Min: 100, Book: []FlipLevel{{100, 50}}},
-		"horde":      {Fair: 300, Min: 300, Sales: 500, SalesPerDay: 80, RobustPerDay: 2000},
+		"horde": {Fair: 300, Min: 300, Sales: 500, SalesPerDay: 80, RobustPerDay: 2000,
+			Front: &FrontStat{N: 50, Sold: [4]float64{45, 49, 50, 50}}},
 	}}
 	slow := FlipItem{Item: 9, Name: "Slow", Houses: map[string]*FlipStat{
 		"blackwater": {Fair: 30000, Min: 10000, Book: []FlipLevel{{10000, 1}}},
-		"horde":      {Fair: 30000, Min: 30000, Sales: 50, SalesPerDay: 6, RobustPerDay: 5},
+		"horde": {Fair: 30000, Min: 30000, Sales: 50, SalesPerDay: 6, RobustPerDay: 5,
+			Front: &FrontStat{N: 50, Sold: [4]float64{2, 10, 20, 30}}},
 	}}
-	// Active: Fast sells within the hour, Slow takes ~5 hours to find a buyer.
-	f := planRisk([]FlipItem{slow, fast}, 40, StyleActive)
-	if len(f) != 2 || f[0].Name != "Fast" || f[0].Profit >= f[1].Profit {
-		t.Fatalf("the quick small flip should rank first: %+v", f)
+	// Fast sells within the hour for a little; Slow takes most of a day for more. Gold sitting
+	// idle isn't the limit, so the bigger expected profit comes first.
+	f := planRisk([]FlipItem{fast, slow}, 40, StyleActive)
+	if len(f) != 2 || f[0].Name != "Slow" || f[0].Expected <= f[1].Expected || f[0].ProfitPerDay >= f[1].ProfitPerDay {
+		t.Fatalf("the bigger expected profit should rank first: %+v", f)
 	}
 }
 
@@ -240,7 +240,7 @@ func TestBlackwaterCappedByHomePrices(t *testing.T) {
 		"horde":    {Fair: 1910, Min: 1580, Listed: 2592, Sales: 255, SalesPerDay: 295, RobustPerDay: 3780, Book: []FlipLevel{{1580, 24}, {1600, 583}}},
 		"alliance": {Fair: 1697, Min: 1665, Listed: 485, Sales: 18, SalesPerDay: 52, RobustPerDay: 545},
 	}}
-	for _, r := range []Style{StyleAway, StyleRegular, StyleActive} {
+	for _, r := range []Style{StyleAway, StyleCasual, StyleActive} {
 		for _, f := range planRisk([]FlipItem{it}, 40, r) {
 			if f.SellHouse == "blackwater" && f.SellAt >= 1665 {
 				t.Fatalf("%s: sells on Blackwater above both home prices: %+v", r, f)
@@ -263,7 +263,7 @@ func TestFallingMarketOnlyAtHighRisk(t *testing.T) {
 		"blackwater": {Fair: 2499, Min: 2395, Sales: 88, SalesPerDay: 60, RobustPerDay: 190, Book: []FlipLevel{{2395, 82}}},
 		"alliance":   {Fair: 2411, Min: 2000, Sales: 21, SalesPerDay: 20, RobustPerDay: 100},
 	}}
-	for _, r := range []Style{StyleAway, StyleRegular} {
+	for _, r := range []Style{StyleAway, StyleCasual} {
 		if f := planRisk([]FlipItem{it}, 40, r); len(f) != 0 {
 			t.Fatalf("%s: %+v", r, f)
 		}
@@ -281,7 +281,7 @@ func TestFallingMarketOnlyAtHighRisk(t *testing.T) {
 	}
 	// Steady Alliance price (market value 21s): the same flip is fine at medium risk.
 	it.Houses["alliance"].Fair = 2100
-	if f := planRisk([]FlipItem{it}, 40, StyleRegular); !hasAlliance(f) {
+	if f := planRisk([]FlipItem{it}, 40, StyleCasual); !hasAlliance(f) {
 		t.Fatalf("steady: %+v", f)
 	}
 }
@@ -297,7 +297,7 @@ func TestHighDepositBlackwaterSkipped(t *testing.T) {
 		"alliance":   {Fair: 1874, Min: 1874, Sales: 59, SalesPerDay: 60, RobustPerDay: 400},
 	}}
 	in := &FlipInputs{Houses: []FlipHouse{horde, bwDep, ally}, Items: []FlipItem{it}}
-	for _, r := range []Style{StyleAway, StyleRegular, StyleActive} {
+	for _, r := range []Style{StyleAway, StyleCasual, StyleActive} {
 		f, _, _ := PlanFlips(in, FlipOptions{Gold: g(40), Style: r})
 		for _, x := range f {
 			if x.SellHouse == "blackwater" {
@@ -324,8 +324,9 @@ func TestDepositsWeighOnExpectedProfit(t *testing.T) {
 	}
 	for _, r := range Styles {
 		f := planRisk([]FlipItem{mk(4000)}, 40, r)
-		if len(f) != 1 || f[0].DepositAtRisk != 16000 || f[0].Expected >= f[0].Profit {
-			t.Fatalf("%s: %+v", r, f)
+		light := planRisk([]FlipItem{mk(100)}, 40, r)
+		if len(f) != 1 || len(light) != 1 || f[0].DepositAtRisk != 16000 || f[0].Expected > f[0].Profit || f[0].Expected >= light[0].Expected {
+			t.Fatalf("%s: %+v (light deposit %+v)", r, f, light)
 		}
 		if f := planRisk([]FlipItem{mk(9000)}, 40, r); len(f) != 0 {
 			t.Fatalf("%s: deposit eats it: %+v", r, f)
@@ -349,31 +350,51 @@ func TestBufferPicksTheUnitsThatSurviveIt(t *testing.T) {
 
 func TestExpectedProfitWeighsRelists(t *testing.T) {
 	// Sure to sell: expected equals gross - cost, in one round.
-	if ev, r, all := expectedProfit(10000, 6000, 500, 1, 5, 0); ev != 4000 || r != 1 || all != 1 {
+	if ev, r, all := expectedProfit(10000, 6000, 500, 1, 1, 0, 5, 0); ev != 4000 || r != 1 || all != 1 {
 		t.Fatalf("sure: %d %v %v", ev, r, all)
 	}
 	// Half the time a round fails: some deposits and undercuts are expected, more rounds too.
-	ev, r, _ := expectedProfit(10000, 6000, 500, 0.5, 5, 6000)
+	ev, r, _ := expectedProfit(10000, 6000, 500, 0.5, 1, 0, 5, 6000)
 	if ev >= 4000 || ev < 3000 || r <= 1.5 {
 		t.Fatalf("coin flip: %d %v", ev, r)
 	}
 	// A slow seller with a big deposit is worth less than the same flip that sells fast.
-	slow, _, _ := expectedProfit(10000, 6000, 2000, 0.1, 5, 6000)
-	fast, _, _ := expectedProfit(10000, 6000, 2000, 0.5, 5, 6000)
+	slow, _, _ := expectedProfit(10000, 6000, 2000, 0.1, 1, 0, 5, 6000)
+	fast, _, _ := expectedProfit(10000, 6000, 2000, 0.5, 1, 0, 5, 6000)
 	if slow >= fast {
 		t.Fatalf("slow %d fast %d", slow, fast)
+	}
+}
+
+func TestExpectedProfitChargesOnlyRealRelists(t *testing.T) {
+	// Visiting is free: a listing that's never undercut and doesn't run out keeps its price and
+	// deposit, however often you look. One that's always undercut pays for every round.
+	calm, _, _ := expectedProfit(10000, 6000, 500, 0.2, 0, 0, 12, 3000)
+	chased, _, _ := expectedProfit(10000, 6000, 500, 0.2, 1, 0, 12, 3000)
+	if calm <= chased {
+		t.Fatalf("calm %d chased %d", calm, chased)
+	}
+	// More visits at the same per-round chance never hurt a listing nobody undercuts.
+	few, _, _ := expectedProfit(10000, 6000, 500, 0.2, 0, 0, 5, 3000)
+	if calm < few {
+		t.Fatalf("12 rounds %d < 5 rounds %d", calm, few)
+	}
+	// A listing that runs out every round loses its deposit each time, at the same price.
+	lapsing, _, _ := expectedProfit(10000, 6000, 500, 0.2, 0, 1, 12, 3000)
+	if lapsing >= calm || lapsing <= chased {
+		t.Fatalf("lapsing %d (calm %d, chased %d)", lapsing, calm, chased)
 	}
 }
 
 func TestExpectedProfitValuesLeftoverStock(t *testing.T) {
 	// One round (away), 20% chance: 80% of the time the stock is left at the going price. If
 	// that's under cost, the flip loses money on average; the old model assumed a last sale.
-	ev, _, all := expectedProfit(10000, 6000, 100, 0.2, 1, 3000)
+	ev, _, all := expectedProfit(10000, 6000, 100, 0.2, 1, 0, 1, 3000)
 	if ev >= 0 || math.Abs(all-0.2) > 1e-9 {
 		t.Fatalf("leftover under cost: %d (sold out %.2f)", ev, all)
 	}
 	// More visits at the same per-visit chance sell more of it and earn more.
-	more, _, all5 := expectedProfit(10000, 6000, 100, 0.2, 12, 3000)
+	more, _, all5 := expectedProfit(10000, 6000, 100, 0.2, 1, 0, 12, 3000)
 	if more <= ev || all5 <= 0.9 {
 		t.Fatalf("12 visits: %d (sold out %.2f)", more, all5)
 	}

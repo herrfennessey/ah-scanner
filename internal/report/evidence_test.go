@@ -66,7 +66,7 @@ func TestSlidingMarketLeftToActiveTraders(t *testing.T) {
 			Sold12: sold([3]int64{1300, 20, 5}),
 			Sold48: sold([3]int64{1300, 200, 20})},
 	}}
-	for _, r := range []Style{StyleRegular, StyleAway} {
+	for _, r := range []Style{StyleCasual, StyleAway} {
 		if f := planRisk([]FlipItem{it}, 40, r); len(f) != 0 {
 			t.Fatalf("%s: %+v", r, f)
 		}

@@ -17,7 +17,7 @@ import (
 type flipsResult struct {
 	Flips      []report.Flip                 `json:"flips"`
 	Gold       int64                         `json:"gold"`
-	Style      report.Style                  `json:"style" jsonschema:"active, regular or away: how often the player comes back to relist"`
+	Style      report.Style                  `json:"style" jsonschema:"active, casual or away: how often the player comes back, which decides the plays offered"`
 	ComputedAt int64                         `json:"computed_at"`
 	Confidence string                        `json:"confidence" jsonschema:"early (<3 days of history), fair (<10 days) or good"`
 	Funnel     map[string]*report.FlipFunnel `json:"funnel" jsonschema:"per route: how many items each rule rejected"`
@@ -102,7 +102,7 @@ func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, res)
 }
 
-// styleParam reads ?style=, or the old ?risk= (low, medium, high map to away, regular, active).
+// styleParam reads ?style=, or the old ?risk= (low, medium, high map to away, casual, active).
 func styleParam(r *http.Request) string {
 	if v := r.URL.Query().Get("style"); v != "" {
 		return v

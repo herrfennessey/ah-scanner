@@ -22,17 +22,29 @@ import (
 var frontHours = [4]float64{1, 5, 12, 24}
 
 // FrontStat measures listings that were the cheapest of their item when first seen: the share
-// of their units sold within each of frontHours.
+// of their units sold within each of frontHours, and how many were undercut (a cheaper listing
+// appeared while they still had units up) within each.
 type FrontStat struct {
-	N    float64    `json:"n"`    // listings
-	Sold [4]float64 `json:"sold"` // sum over listings of the share of units sold within frontHours[i]
+	N     float64    `json:"n"`     // listings
+	Sold  [4]float64 `json:"sold"`  // sum over listings of the share of units sold within frontHours[i]
+	Under [4]float64 `json:"under"` // listings undercut within frontHours[i]
 }
 
 func (f *FrontStat) add(o *FrontStat) {
 	f.N += o.N
 	for i := range f.Sold {
 		f.Sold[i] += o.Sold[i]
+		f.Under[i] += o.Under[i]
 	}
+}
+
+func horizon(h float64) int {
+	for j, x := range frontHours {
+		if h <= x {
+			return j
+		}
+	}
+	return len(frontHours) - 1
 }
 
 // rate is the share sold within h hours (the nearest measured interval at or above it).
@@ -40,14 +52,15 @@ func (f *FrontStat) rate(h float64) (float64, float64) {
 	if f == nil || f.N == 0 {
 		return 0, 0
 	}
-	i := len(frontHours) - 1
-	for j, x := range frontHours {
-		if h <= x {
-			i = j
-			break
-		}
+	return f.Sold[horizon(h)] / f.N, f.N
+}
+
+// undercut is the share undercut within h hours.
+func (f *FrontStat) undercut(h float64) (float64, float64) {
+	if f == nil || f.N == 0 {
+		return 0, 0
 	}
-	return f.Sold[i] / f.N, f.N
+	return f.Under[horizon(h)] / f.N, f.N
 }
 
 const (
@@ -208,18 +221,23 @@ func addEvidence(ctx context.Context, db *sql.DB, house int64, faction string, k
 	}
 
 	// How the listings that were cheapest when posted did, over the 3 days before the last 24
-	// hours (so the day after each one is known by now).
+	// hours (so the day after each one is known by now). The later ones are read too, as the
+	// listings that undercut them: the first listing cheaper than one of these is itself the
+	// cheapest when posted.
 	type fa struct {
 		k                Key
 		first, qty, sold int64 // sold: units of a bought closure
-		closed           int64
+		closed, price    int64
 		fracs            [4]float64
+		under            int64 // when first undercut (0: never)
 	}
 	front := map[[2]any]*fa{}
+	byKey := map[Key][]*fa{}
 	rows, err = db.QueryContext(ctx, `SELECT a.kind, a.auction_id, a.item_id, a.variant, a.first_seen, a.qty_first,
-			CASE WHEN a.outcome='sold' THEN a.qty_last ELSE 0 END, COALESCE(a.closed_at, 0)
-		FROM auction a WHERE a.house_id=? AND a.front=1 AND a.first_seen>? AND a.first_seen<=? AND a.item_id IN (SELECT value FROM json_each(?))`,
-		house, at-4*86400, at-86400, ids)
+			CASE WHEN a.outcome='sold' THEN a.qty_last ELSE 0 END, COALESCE(a.closed_at, 0), a.unit_price
+		FROM auction a WHERE a.house_id=? AND a.front=1 AND a.first_seen>? AND a.first_seen<=? AND a.item_id IN (SELECT value FROM json_each(?))
+		ORDER BY a.first_seen`,
+		house, at-4*86400, at, ids)
 	if err != nil {
 		return nil, fmt.Errorf("evidence front: %w", err)
 	}
@@ -227,12 +245,16 @@ func addEvidence(ctx context.Context, db *sql.DB, house int64, faction string, k
 		var kind string
 		var id int64
 		x := &fa{}
-		if err := rows.Scan(&kind, &id, &x.k.Item, &x.k.Variant, &x.first, &x.qty, &x.sold, &x.closed); err != nil {
+		if err := rows.Scan(&kind, &id, &x.k.Item, &x.k.Variant, &x.first, &x.qty, &x.sold, &x.closed, &x.price); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if x.qty <= 0 || stat(x.k) == nil {
+		if x.qty <= 0 || x.price <= 0 || stat(x.k) == nil {
 			continue
+		}
+		byKey[x.k] = append(byKey[x.k], x)
+		if x.first > at-86400 {
+			continue // an undercutter only: its own day isn't over yet
 		}
 		if x.sold > 0 {
 			for i, h := range frontHours {
@@ -246,6 +268,24 @@ func addEvidence(ctx context.Context, db *sql.DB, house int64, faction string, k
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	// The first cheaper listing posted while it was still up, within the longest horizon.
+	last := int64(frontHours[len(frontHours)-1] * 3600)
+	for _, l := range byKey {
+		for i, x := range l {
+			if x.first > at-86400 {
+				break
+			}
+			for _, y := range l[i+1:] {
+				if y.first > x.first+last || (x.closed > 0 && y.first >= x.closed) {
+					break
+				}
+				if y.first > x.first && y.price < x.price {
+					x.under = y.first
+					break
+				}
+			}
+		}
 	}
 	rows, err = db.QueryContext(ctx, `SELECT e.kind, e.auction_id, e.ts, e.units FROM sale_event e
 		JOIN auction a ON a.house_id=e.house_id AND a.kind=e.kind AND a.auction_id=e.auction_id
@@ -282,8 +322,11 @@ func addEvidence(ctx context.Context, db *sql.DB, house int64, faction string, k
 			s.Front = &FrontStat{}
 		}
 		f := FrontStat{N: 1}
-		for i := range f.Sold {
+		for i, h := range frontHours {
 			f.Sold[i] = math.Min(1, x.fracs[i]/float64(x.qty))
+			if x.under > 0 && x.under-x.first <= int64(h*3600) {
+				f.Under[i] = 1
+			}
 		}
 		s.Front.add(&f)
 		all.add(&f)
@@ -299,5 +342,16 @@ func frontChance(s *FlipStat, house *FrontStat, h float64, fallback float64) flo
 		prior = r
 	}
 	r, n := s.Front.rate(h)
+	return (r*n + prior*frontPrior) / (n + frontPrior)
+}
+
+// undercutChance is the chance a fresh cheapest listing is undercut within h hours, blended the
+// same way (fallback when the house has no measurements).
+func undercutChance(s *FlipStat, house *FrontStat, h float64, fallback float64) float64 {
+	prior := fallback
+	if r, n := house.undercut(h); n > 0 {
+		prior = r
+	}
+	r, n := s.Front.undercut(h)
 	return (r*n + prior*frontPrior) / (n + frontPrior)
 }

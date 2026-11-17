@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -71,6 +72,8 @@ type FlipItem struct {
 	Item    int64                `json:"item"`
 	Variant string               `json:"variant,omitempty"`
 	Name    string               `json:"name"`
+	Icon    string               `json:"icon,omitempty"`
+	Quality int                  `json:"quality"`
 	Deposit int64                `json:"deposit"` // estimated faction-house deposit per unit
 	Houses  map[string]*FlipStat `json:"houses"`  // by faction
 }
@@ -97,6 +100,48 @@ func (in *FlipInputs) Confidence() string {
 }
 
 const bookLevels = 40
+
+// CachedHouses reads the houses from the stored flip inputs: the collector resolved them, so a
+// copied database brings them along.
+func CachedHouses(ctx context.Context, st *store.Store) ([]FlipHouse, error) {
+	_, b, err := st.LoadFlipCache(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the flip cache: %w", err)
+	}
+	if b == nil {
+		return nil, fmt.Errorf("no flip cache to take the houses from (run the collector once)")
+	}
+	var in FlipInputs
+	if err := json.Unmarshal(b, &in); err != nil {
+		return nil, err
+	}
+	return in.Houses, nil
+}
+
+// RebuildFlipCache recomputes the stored flip inputs from the database as of its newest scan,
+// for the houses already in the cache: what the collector does after each scan, for a copy of
+// the database with no collector running (ahc serve -rebuild).
+func RebuildFlipCache(ctx context.Context, st *store.Store, depositRate float64) (*FlipInputs, error) {
+	houses, err := CachedHouses(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	var last sql.NullInt64
+	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&last); err != nil {
+		return nil, err
+	} else if !last.Valid {
+		return nil, fmt.Errorf("no scans")
+	}
+	in, err := BuildFlipInputs(ctx, st, houses, depositRate, time.Unix(last.Int64, 0))
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	return in, st.SaveFlipCache(ctx, in.ComputedAt, b)
+}
 
 // BuildFlipInputs reads current order books and 7 days of daily rows for every house.
 func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, now time.Time) (*FlipInputs, error) {
@@ -329,17 +374,24 @@ func buildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 		return nil, err
 	}
 	sellPrice := map[int64]int64{}
-	rows, err := st.DB.QueryContext(ctx, `SELECT id, COALESCE(sell_price,0) FROM item`)
+	type look struct {
+		icon    string
+		quality int
+	}
+	looks := map[int64]look{}
+	rows, err := st.DB.QueryContext(ctx, `SELECT id, COALESCE(sell_price,0), COALESCE(icon,''), COALESCE(quality,1) FROM item`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id, sp int64
-		if err := rows.Scan(&id, &sp); err != nil {
+		var l look
+		if err := rows.Scan(&id, &sp, &l.icon, &l.quality); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		sellPrice[id] = sp
+		looks[id] = l
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -351,6 +403,7 @@ func buildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 	})
 	for _, k := range keep {
 		in.Items = append(in.Items, FlipItem{Item: k.Item, Variant: k.Variant, Name: ItemLabel(names, k),
+			Icon: looks[k.Item].icon, Quality: looks[k.Item].quality,
 			Deposit: int64(math.Round(float64(sellPrice[k.Item]) * depositRate)), Houses: stats[k]})
 	}
 	return in, nil
@@ -372,67 +425,99 @@ func bookRows(ctx context.Context, db *sql.DB, house int64, want []Key, past boo
 		house, t, house, idList(want), t, t)
 }
 
-// Style is how the player trades: how often they come back to the auction house to relist
-// what was undercut, and so how long a flip has to work without them.
+// Style is how the player trades: how often they can come back to the auction house. It
+// decides which plays they're offered, and each style can do everything the less attentive
+// ones can: active ⊇ casual ⊇ away.
 type Style string
 
 const (
-	StyleActive  Style = "active"  // checks about hourly and relists whenever undercut
-	StyleRegular Style = "regular" // checks 4-5 times a day
-	StyleAway    Style = "away"    // posts a long listing and is back in about 12 hours
+	StyleActive Style = "active" // checks about hourly
+	StyleCasual Style = "casual" // checks 4-5 times a day
+	StyleAway   Style = "away"   // posts long listings and comes back later
 )
+
+// Play is what the player does with a resale listing once it's posted.
+type Play string
+
+const (
+	// PlayHold: post a 24h listing at a price buyers pay and leave it, even when undercut. On
+	// the commodity AH an undercut listing still sells once the cheaper ones are bought.
+	PlayHold Play = "hold"
+	// PlayCheckIn: come back every few hours and relist only when the queue cheaper than yours
+	// is longer than buyers will take before the listing runs out.
+	PlayCheckIn Play = "check_in"
+	// PlayCamp: check hourly and relist whenever undercut.
+	PlayCamp Play = "camp"
+)
+
+// playProfile is what a play means in numbers.
+type playProfile struct {
+	CheckHours  float64 // between visits: one listing round (a hold has one round, the listing)
+	ListHours   float64 // listing duration posted
+	WindowHours float64 // the stock should be gone by then; what's left is valued at the going price
+	MinSales    float64 // separate sales per day in the market that absorbs the resale
+	// Volatile: only a player who's there to react can trade items whose price swings or slides.
+	Volatile bool
+	// Relists: whether the play ever relists (a hold doesn't).
+	Relists bool
+}
+
+var playProfiles = map[Play]playProfile{
+	PlayHold:    {CheckHours: 24, ListHours: 24, WindowHours: 24, MinSales: 4},
+	PlayCheckIn: {CheckHours: 5, ListHours: 24, WindowHours: 24, MinSales: 4, Relists: true},
+	PlayCamp:    {CheckHours: 1, ListHours: 8, WindowHours: 12, MinSales: 6, Volatile: true, Relists: true},
+}
+
+// rounds is how many listing rounds fit in the window: visits at which unsold stock may be relisted.
+func (p playProfile) rounds() int { return max(1, int(math.Round(p.WindowHours/p.CheckHours))) }
 
 // styleProfile is what a style means in numbers.
 type styleProfile struct {
-	CheckHours  float64 // between visits: one listing round
-	ListHours   float64 // listing duration posted (long enough to last until the next visit)
-	WindowHours float64 // the stock should be gone by then; what's left is valued at the going price
-	MaxShare    float64 // most of the gold one flip may use
-	MinROI      float64
-	MinSales    float64 // separate sales per day in the market that absorbs the resale
-	// AllowVolatile: only a player who's there to react can trade items whose price swings.
-	AllowVolatile bool
+	Plays    []Play  // offered, least attentive first
+	MaxShare float64 // most of the gold one flip may use
+	MinROI   float64
 	// SellBlackwater allows routes that resell on Blackwater: 15% cut, 5x deposit, a sixth of
 	// Horde's buyers and faster undercuts, so not for a player who's away.
 	SellBlackwater bool
 }
 
 var styleProfiles = map[Style]styleProfile{
-	StyleActive:  {CheckHours: 1, ListHours: 8, WindowHours: 12, MaxShare: 0.5, MinROI: 0.15, MinSales: 6, AllowVolatile: true, SellBlackwater: true},
-	StyleRegular: {CheckHours: 5, ListHours: 8, WindowHours: 24, MaxShare: 0.4, MinROI: 0.2, MinSales: 4, SellBlackwater: true},
-	StyleAway:    {CheckHours: 12, ListHours: 24, WindowHours: 12, MaxShare: 0.3, MinROI: 0.25, MinSales: 4},
+	StyleActive: {Plays: []Play{PlayHold, PlayCheckIn, PlayCamp}, MaxShare: 0.5, MinROI: 0.2, SellBlackwater: true},
+	StyleCasual: {Plays: []Play{PlayHold, PlayCheckIn}, MaxShare: 0.4, MinROI: 0.2, SellBlackwater: true},
+	StyleAway:   {Plays: []Play{PlayHold}, MaxShare: 0.3, MinROI: 0.25},
 }
 
-// ParseStyle accepts active, regular or away (default regular). The old risk levels map to
-// the nearest style: high to active, medium to regular, low to away.
+// ParseStyle accepts active, casual or away (default casual). Older names map to the nearest
+// style: regular to casual, and the risk levels high, medium and low to active, casual and away.
 func ParseStyle(s string) Style {
 	switch s {
 	case "high":
 		return StyleActive
-	case "medium":
-		return StyleRegular
+	case "medium", "regular":
+		return StyleCasual
 	case "low":
 		return StyleAway
 	}
 	if _, ok := styleProfiles[Style(s)]; ok {
 		return Style(s)
 	}
-	return StyleRegular
+	return StyleCasual
 }
 
 // competeBand: listings up to this much above our price compete with us for the same buyers,
 // since sellers undercut each other.
 const competeBand = 1.10
 
-// FlipOptions are the player's gold and trading style. Zero fields come from the style.
+// FlipOptions are the player's gold and trading style. Zero fields come from the style (and,
+// for MinSales, from each play).
 type FlipOptions struct {
 	Gold      int64 // copper the player has; default 40g
-	Style     Style // default regular
+	Style     Style // default casual
 	MaxShare  float64
 	MinROI    float64
 	MinSales  float64 // separate sales per day
 	MinProfit int64   // default 0.25% of gold, between 10s and 50s
-	Volatile  bool    // allow items whose price swings
+	Volatile  bool    // allow items whose price swings, whatever the play
 	// SellBlackwater allows reselling on Blackwater (from the style).
 	SellBlackwater bool
 	Limit          int
@@ -440,7 +525,7 @@ type FlipOptions struct {
 	AllyEdge    float64 // your Blackwater price must be this much under Alliance's, default 0.05
 	AllyCapture float64 // share of Alliance demand assumed to come to Blackwater, default 0.1
 
-	p styleProfile
+	plays []Play
 }
 
 func (o FlipOptions) withDefaults() FlipOptions {
@@ -449,17 +534,13 @@ func (o FlipOptions) withDefaults() FlipOptions {
 	}
 	o.Style = ParseStyle(string(o.Style))
 	p := styleProfiles[o.Style]
-	o.p = p
+	o.plays = p.Plays
 	if o.MaxShare <= 0 {
 		o.MaxShare = p.MaxShare
 	}
 	if o.MinROI <= 0 {
 		o.MinROI = p.MinROI
 	}
-	if o.MinSales <= 0 {
-		o.MinSales = p.MinSales
-	}
-	o.Volatile = o.Volatile || p.AllowVolatile
 	o.SellBlackwater = o.SellBlackwater || p.SellBlackwater
 	if o.MinProfit <= 0 {
 		// Scales gently: a quick, sure 50s is worth showing whatever the budget.
@@ -474,14 +555,31 @@ func (o FlipOptions) withDefaults() FlipOptions {
 	return o
 }
 
-// rounds is how many listing rounds fit in the window: visits at which unsold stock is relisted.
-func (p styleProfile) rounds() int { return max(1, int(math.Round(p.WindowHours/p.CheckHours))) }
+// playOptions are the gates for one play.
+type playOptions struct {
+	FlipOptions
+	play     Play
+	p        playProfile
+	minSales float64
+	volatile bool
+}
+
+func (o FlipOptions) forPlay(pl Play) playOptions {
+	p := playProfiles[pl]
+	po := playOptions{FlipOptions: o, play: pl, p: p, minSales: o.MinSales, volatile: o.Volatile || p.Volatile}
+	if po.minSales <= 0 {
+		po.minSales = p.MinSales
+	}
+	return po
+}
 
 // Flip is one recommended trade.
 type Flip struct {
 	ItemID    int64  `json:"item_id"`
 	Variant   string `json:"variant,omitempty"`
 	Name      string `json:"name"`
+	Icon      string `json:"icon,omitempty"`
+	Quality   int    `json:"quality"`
 	Kind      string `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater, sold to Alliance players)"`
 	BuyHouse  string `json:"buy_house"`
 	SellHouse string `json:"sell_house"`
@@ -489,22 +587,30 @@ type Flip struct {
 	BuyUpTo   int64  `json:"buy_up_to_price"`
 	BuyCost   int64  `json:"buy_cost"`
 	SellAt    int64  `json:"sell_at"`
-	ListHours int    `json:"list_hours" jsonschema:"listing duration to post: long enough to last until your next visit"`
+	// Play is how to handle the listing: hold, check_in or camp (the best the style allows).
+	Play       Play `json:"play" jsonschema:"hold (post 24h and leave it, even when undercut), check_in (come back every check_hours and relist only when more than relist_queue units are cheaper than yours) or camp (check hourly and relist whenever undercut)"`
+	ListHours  int  `json:"list_hours" jsonschema:"listing duration to post"`
+	CheckHours int  `json:"check_hours,omitempty" jsonschema:"hours between visits for check_in and camp"`
+	// RelistQueue: for check_in, relist when more units than this are listed cheaper than yours
+	// at your first visit (buyers wouldn't get through them and yours before it runs out).
+	RelistQueue int64   `json:"relist_queue,omitempty" jsonschema:"check_in only: at your first visit, relist if more than this many units are listed cheaper than yours (0: whenever undercut)"`
+	Demand      float64 `json:"demand_per_day" jsonschema:"units a day buyers take near the floor: what clears the queue ahead of you"`
 	// Profit is after the cut and one lost deposit, if all sell at sell_at.
 	Profit int64 `json:"profit_if_sold" jsonschema:"profit if every unit sells at sell_at, after the cut and one lost deposit"`
-	// Expected weighs the listing rounds of the style: each sells with SellChance; one that
-	// doesn't costs the deposit and a typical undercut. Stock left at the end of the window is
-	// valued at the going price.
-	Expected      int64   `json:"expected_profit" jsonschema:"profit weighted by the measured chance each visit's listing sells, counting lost deposits and price cuts on relists, and valuing stock still unsold at the end of the style's window at the going price"`
-	SellChance    float64 `json:"sell_chance" jsonschema:"measured share of this item's units, listed as the cheapest, that sold before your next visit (blended with the house's rate when the item has few such listings)"`
-	SoldOut       float64 `json:"sold_out_chance" jsonschema:"chance everything sells within the style's window, at that per-visit chance"`
+	// Expected weighs the listing rounds of the play: each sells with SellChance; one that
+	// doesn't may be undercut (and relisted, for the plays that relist). Stock left at the end
+	// of the window is valued at the going price.
+	Expected      int64   `json:"expected_profit" jsonschema:"profit weighted by the measured chance each round's listing sells, counting the deposits and price cuts of the relists the play makes, and valuing stock still unsold at the end of the play's window at the going price"`
+	SellChance    float64 `json:"sell_chance" jsonschema:"measured share of this item's units, listed as the cheapest, that sold within one round of the play (a hold: its 24h listing; otherwise until your next visit), blended with the house's rate when the item has few such listings"`
+	Undercut      float64 `json:"undercut_chance" jsonschema:"measured chance a fresh cheapest listing of this item is undercut within one round"`
+	SoldOut       float64 `json:"sold_out_chance" jsonschema:"chance everything sells within the play's window"`
 	GoneSoon      float64 `json:"gone_soon" jsonschema:"measured share of listings this far under market value that are gone within an hour of being seen: how fast to act"`
 	DepositAtRisk int64   `json:"deposit_at_risk" jsonschema:"deposit paid to list your units, lost if they expire or you cancel to undercut (Blackwater's deposit is 5x a faction house's)"`
 	ROI           float64 `json:"roi"`
 	ShareOfGold   float64 `json:"share_of_gold"`
 	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the recent rate of purchases at or above your price"`
 	Competing     int64   `json:"competing_units" jsonschema:"units other sellers list within 10% of your price"`
-	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): the ranking key"`
+	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): breaks ties in the ranking"`
 	SalesPerDay   float64 `json:"sales_per_day" jsonschema:"separate sales per day in the market that absorbs the resale"`
 	RecentAbove   int64   `json:"recent_sales_above" jsonschema:"separate purchases at or above sell_at in the last 12 hours: proof buyers still pay it"`
 	Clearing      int64   `json:"recent_price,omitempty" jsonschema:"median price actually paid over the last 24 hours"`
@@ -567,7 +673,7 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 					fn.NoBuyListing++
 					continue
 				}
-				f, reason := planOne(it, b, s, buy, sell, kind, ally, in.Front[sell.Faction], maxSpend, o)
+				f, reason := bestPlay(it, b, s, buy, sell, kind, ally, in.Front[sell.Faction], maxSpend, o)
 				switch reason {
 				case "":
 					f.ShareOfGold = float64(f.BuyCost) / float64(o.Gold)
@@ -589,12 +695,13 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 			}
 		}
 	}
-	// Fast money first: gold earned per day the gold is tied up.
+	// Most gold first: expected profit already weighs in the chance it sells, the relists and
+	// stock left over. Gold tied up is not the limit, so speed only breaks ties.
 	sort.Slice(flips, func(i, j int) bool {
-		if flips[i].ProfitPerDay != flips[j].ProfitPerDay {
-			return flips[i].ProfitPerDay > flips[j].ProfitPerDay
+		if flips[i].Expected != flips[j].Expected {
+			return flips[i].Expected > flips[j].Expected
 		}
-		return flips[i].Expected > flips[j].Expected
+		return flips[i].ProfitPerDay > flips[j].ProfitPerDay
 	})
 	if o.Limit > 0 && len(flips) > o.Limit {
 		flips = flips[:o.Limit]
@@ -638,12 +745,18 @@ const (
 	minProof = 2
 	// fallbackChance: per-visit sell chance when a house has no measurements at all.
 	fallbackChance = 0.3
+	// fallbackUndercut: chance a fresh cheapest listing is undercut within a round, when a
+	// house has no measurements at all (a busy AH undercuts most listings within hours).
+	fallbackUndercut = 0.5
+	// campDelivered: share of its expected profit a camp delivered in the backtest (79%, over
+	// 516 trades, 2026-11-14 to 17).
+	campDelivered = 0.8
 )
 
 // marketCeiling is the most a resale can ask: the market value, but never more than buyers
 // actually paid over the last day, and lower again if the price is sliding (projected to the
 // middle of the window).
-func marketCeiling(s *FlipStat, o FlipOptions) int64 {
+func marketCeiling(s *FlipStat, o playOptions) int64 {
 	c := s.Fair
 	if s.Clearing > 0 && (c == 0 || s.Clearing < c) {
 		c = s.Clearing
@@ -654,9 +767,38 @@ func marketCeiling(s *FlipStat, o FlipOptions) int64 {
 	return c
 }
 
-// planOne decides one item on one route. reason is "" (a flip), "slow", "gap", "budget",
-// "falling", "unproven" or "deposit".
-func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, houseFront *FrontStat, maxSpend int64, o FlipOptions) (Flip, string) {
+// reasonStage orders the rejection reasons by how far the item got: when no play works, the
+// funnel shows the reason of the play that got furthest.
+var reasonStage = map[string]int{"slow": 0, "falling": 1, "unproven": 2, "gap": 3, "deposit": 4, "budget": 5}
+
+// bestPlay plans the item with every play the style allows and keeps the one expected to make
+// the most (then the quickest): an attentive player can always do what a less attentive one
+// would, so they're never offered less.
+func bestPlay(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, houseFront *FrontStat, maxSpend int64, o FlipOptions) (Flip, string) {
+	var best Flip
+	found, why := false, ""
+	for _, pl := range o.plays {
+		f, reason := planOne(it, b, s, buy, sell, kind, ally, houseFront, maxSpend, o.forPlay(pl))
+		if reason != "" {
+			if !found && (why == "" || reasonStage[reason] > reasonStage[why]) {
+				why = reason
+			}
+			continue
+		}
+		if !found || f.Expected > best.Expected || (f.Expected == best.Expected && f.ProfitPerDay > best.ProfitPerDay) {
+			best = f
+		}
+		found = true
+	}
+	if found {
+		return best, ""
+	}
+	return Flip{}, why
+}
+
+// planOne decides one item on one route for one play. reason is "" (a flip), "slow", "gap",
+// "budget", "falling", "unproven" or "deposit".
+func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, houseFront *FrontStat, maxSpend int64, o playOptions) (Flip, string) {
 	var rate float64 // units/day the resale market absorbs (floor)
 	var salesDay float64
 	var ceiling int64 // highest sensible resale price
@@ -671,10 +813,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "slow"
 		}
 		a := it.Houses["alliance"]
-		if a == nil || a.Sales < 5 || a.SalesPerDay < max(3, o.MinSales) || (s.Volatile && !o.Volatile) {
+		if a == nil || a.Sales < 5 || a.SalesPerDay < max(3, o.minSales) || (s.Volatile && !o.volatile) {
 			return Flip{}, "slow"
 		}
-		if !o.Volatile && a.Trend < fallingTrend {
+		if !o.volatile && a.Trend < fallingTrend {
 			return Flip{}, "falling"
 		}
 		allyPrice = a.Min
@@ -690,10 +832,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		salesDay = a.SalesPerDay
 		why = fmt.Sprintf("Alliance pays %s at home and buys %.0f times a day; yours on Blackwater is cheaper", Gold(allyPrice), a.SalesPerDay)
 	default:
-		if s.Sales < 5 || s.SalesPerDay < o.MinSales || (s.Volatile && !o.Volatile) || s.Fair == 0 {
+		if s.Sales < 5 || s.SalesPerDay < o.minSales || (s.Volatile && !o.volatile) || s.Fair == 0 {
 			return Flip{}, "slow"
 		}
-		if !o.Volatile && s.Evidence && s.Trend < fallingTrend {
+		if !o.volatile && s.Evidence && s.Trend < fallingTrend {
 			return Flip{}, "falling"
 		}
 		ceiling = marketCeiling(s, o) // never bet on the price going above what buyers pay
@@ -807,7 +949,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	if (units == 0 && capUnits <= 0) || (relist && units > 0 && nearSupply(s, sellAt, 0) > clearCap) {
 		return Flip{}, "slow" // too much competing supply near the resale price
 	}
-	if !o.Volatile && refFair > 0 && float64(sellAt) < fallingFloor*float64(refFair) {
+	if !o.volatile && refFair > 0 && float64(sellAt) < fallingFloor*float64(refFair) {
 		return Flip{}, "falling"
 	}
 	if units == 0 {
@@ -855,30 +997,72 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	competing := nearSupply(s, sellAt, skip)
 	days := float64(units+competing) / math.Max(demand(sellAt), 1e-9)
-	chance := frontChance(s, houseFront, o.p.CheckHours, sellChance(sell.Faction, days))
-	// Stock left at the end of the window goes at what buyers lately pay (or what it cost,
-	// when that's unknown), after the undercuts of every round.
+	// The fallback table is measured over 12 hours: scaled to the round, as if each hour were
+	// an equal, independent chance.
+	fallback := 1 - math.Pow(1-sellChance(sell.Faction, days), o.p.CheckHours/12)
+	chance := frontChance(s, houseFront, o.p.CheckHours, fallback)
+	under := 0.0 // a hold never relists, whatever happens
+	if o.p.Relists {
+		under = undercutChance(s, houseFront, o.p.CheckHours, fallbackUndercut)
+	}
 	rounds := o.p.rounds()
+	// A round that doesn't sell costs a relist when the listing was undercut, or ran out.
+	// A listing that outlasts the window (a check-in's 24h) never runs out before the last visit.
+	expire := math.Min(1, o.p.CheckHours/o.p.ListHours)
+	if !o.p.Relists || o.p.ListHours >= o.p.WindowHours {
+		expire = 0
+	}
+	// Stock left at the end of the window goes at what buyers lately pay (or what it cost,
+	// when that's unknown), after the undercuts it went through, and at least one market move.
 	going := upTo
 	if s.Clearing > 0 {
 		going = s.Clearing
 	}
-	going = min(going, int64(float64(sellAt)*math.Pow(undercutRatio, float64(rounds))))
+	going = min(going, int64(float64(sellAt)*math.Pow(undercutRatio, math.Max(1, under*float64(rounds)))))
 	leftover := int64(math.Round(float64(going) * (1 - sell.Cut) * float64(units)))
-	expected, visits, soldOut := expectedProfit(gross, cost, depositAtRisk, chance, rounds, leftover)
+	expected, visits, soldOut := expectedProfit(gross, cost, depositAtRisk, chance, under, expire, rounds, leftover)
+	// Camping delivered about 80% of what this model promised in the backtest (holds ~99%):
+	// hourly relists in a busy market cost more than the measured odds show. So a camp must
+	// promise 25% more than the other plays to be picked.
+	if o.play == PlayCamp {
+		expected = int64(float64(expected) * campDelivered)
+	}
+	// The deposit comes back on a sale, but profit_if_sold is quoted with one lost: the
+	// expected profit is never more than that.
+	expected = min(expected, profit)
 	if expected < o.MinProfit {
 		return Flip{}, "deposit" // likely relists, undercuts and leftover stock eat it
 	}
-	// Gold is tied up until the next visit after it sells, and no sooner than it can sell.
+	// Gold is tied up until the next visit after it sells, and no sooner than it can sell. A
+	// hold's gold comes back by mail as it sells, or not until the listing ends.
 	hold := math.Max(visits*o.p.CheckHours/24, days)
-	return Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
-		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, ListHours: int(o.p.ListHours), Profit: profit, ROI: roi,
-		Expected: expected, SellChance: chance, SoldOut: soldOut, GoneSoon: goneSoon(buy.Faction, b),
-		DepositAtRisk: depositAtRisk,
-		DaysToSell:    days, Competing: competing,
+	if !o.p.Relists {
+		listed := o.p.ListHours / 24
+		hold = soldOut*math.Min(listed, math.Max(days, 1.0/24)) + (1-soldOut)*listed
+	}
+	f := Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Icon: it.Icon, Quality: it.Quality, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
+		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Play: o.play, ListHours: int(o.p.ListHours), Profit: profit, ROI: roi,
+		Expected: expected, SellChance: chance, Undercut: under, SoldOut: soldOut, GoneSoon: goneSoon(buy.Faction, b),
+		DepositAtRisk: depositAtRisk, Demand: rate,
+		DaysToSell: days, Competing: competing,
 		ProfitPerDay: int64(float64(expected) / math.Max(hold, 1.0/24)),
 		SalesPerDay:  salesDay, RecentAbove: proof, Clearing: s.Clearing, Trend: s.Trend,
-		AlliancePrice: allyPrice, Why: why}, ""
+		AlliancePrice: allyPrice, Why: why}
+	if o.p.Relists {
+		f.CheckHours = int(o.p.CheckHours)
+	}
+	if o.play == PlayCheckIn {
+		f.RelistQueue = RelistQueue(rate, o.p.ListHours-o.p.CheckHours)
+	}
+	return f, ""
+}
+
+// RelistQueue is the check-in rule: with hoursLeft on the listing, relist when more units than
+// this are listed cheaper than yours. Buyers take the cheapest first at perDay units a day, so
+// beyond it they wouldn't reach your first unit before the listing runs out. 0: relist whenever
+// undercut.
+func RelistQueue(perDay, hoursLeft float64) int64 {
+	return max(0, int64(math.Floor(perDay*hoursLeft/24)))
 }
 
 // blackwaterHomeCap is the most a Blackwater buyer would pay: the higher of the Horde and
@@ -907,12 +1091,18 @@ func title(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// StyleTiming is a style's visit interval, window and listing duration in hours, and its
-// listing rounds.
-func StyleTiming(s Style) (checkHours, windowHours, listHours float64, rounds int) {
-	p := styleProfiles[ParseStyle(string(s))]
-	return p.CheckHours, p.WindowHours, p.ListHours, p.rounds()
+// PlayTiming is a play's visit interval, window and listing duration in hours, its listing
+// rounds, and whether it relists.
+func PlayTiming(p Play) (checkHours, windowHours, listHours float64, rounds int, relists bool) {
+	x := playProfiles[p]
+	return x.CheckHours, x.WindowHours, x.ListHours, x.rounds(), x.Relists
 }
 
+// StylePlays lists the plays a style is offered.
+func StylePlays(s Style) []Play { return styleProfiles[ParseStyle(string(s))].Plays }
+
 // Styles lists the trading styles, most attentive first.
-var Styles = []Style{StyleActive, StyleRegular, StyleAway}
+var Styles = []Style{StyleActive, StyleCasual, StyleAway}
+
+// Plays lists the plays, least attentive first.
+var Plays = []Play{PlayHold, PlayCheckIn, PlayCamp}
