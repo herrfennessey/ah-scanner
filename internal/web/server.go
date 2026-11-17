@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"github.com/herrfennessey/ah-scanner/internal/suffix"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -165,6 +166,7 @@ func (s *Server) houseByName(ctx context.Context, q string) (House, error) {
 type ItemRow struct {
 	ID         int64    `json:"id"`
 	Variant    string   `json:"variant,omitempty"`
+	Suffix     string   `json:"suffix,omitempty"` // "of the Eagle", already part of Name
 	Name       string   `json:"name"`
 	Quality    int      `json:"quality"`
 	ItemLevel  int      `json:"ilvl"`
@@ -296,6 +298,8 @@ func (s *Server) buildRows(ctx context.Context, houseID int64) ([]ItemRow, error
 		if row.Name == "" {
 			row.Name = "Item #" + strconv.FormatInt(k.Item, 10)
 		}
+		row.Suffix = suffix.Name(k.Variant)
+		row.Name = suffix.Label(row.Name, k.Variant)
 		row.Fair = c.p20
 		if d := daily[k]; d != nil {
 			if d.Fair > 0 {
