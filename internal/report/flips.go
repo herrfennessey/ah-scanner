@@ -73,7 +73,7 @@ type FlipItem struct {
 	Variant string               `json:"variant,omitempty"`
 	Name    string               `json:"name"`
 	Icon    string               `json:"icon,omitempty"`
-	Quality int                  `json:"quality,omitempty"`
+	Quality int                  `json:"quality"`
 	Deposit int64                `json:"deposit"` // estimated faction-house deposit per unit
 	Houses  map[string]*FlipStat `json:"houses"`  // by faction
 }
@@ -576,7 +576,7 @@ type Flip struct {
 	Variant   string `json:"variant,omitempty"`
 	Name      string `json:"name"`
 	Icon      string `json:"icon,omitempty"`
-	Quality   int    `json:"quality,omitempty"`
+	Quality   int    `json:"quality"`
 	Kind      string `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater, sold to Alliance players)"`
 	BuyHouse  string `json:"buy_house"`
 	SellHouse string `json:"sell_house"`
