@@ -926,7 +926,9 @@ const perRep = (v) => {
   return v < 0 ? `earns ${amount}` : amount;
 };
 // Supply is priced at Horde, so its item links open the item page on Horde (see data-house-link).
+// A fill never seen on the AH has no item id (plan.go leaves it 0): plain text, no item page.
 function supplyLink(id, name, cls = "") {
+  if (!id) return cls ? `<span class="${cls}">${esc(name)}</span>` : esc(name);
   return `<a class="item-link ${cls}" href="#/item/${id}" data-house-link="horde">${esc(name)}</a>`;
 }
 function supplyItem(items, id, extra = "") {
