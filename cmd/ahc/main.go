@@ -41,8 +41,8 @@ Reports (common flags: -house horde|blackwater, -days N, -min-sold N, -csv, -lim
   ahc movers             what sells reliably
   ahc deals              what is listed below its fair price right now
   ahc item <item>        daily history of one item
-  ahc backtest           replay the flip planner over the last -days (default 3) and score
-                         each flip by what sold afterwards (-gold G, -hold 24h, -csv for every trade)
+  ahc backtest           replay the flip planner over the last -days (default 3) and score each
+                         flip by what sold afterwards, per trading style (-gold G, -every 1h, -csv)
 
 <item> is an item ID or (part of) its name. Config: -config path (default $AHC_CONFIG or /config.yaml).
 `
@@ -73,7 +73,7 @@ type flags struct {
 	csv, all, volatile     bool
 	out                    string
 	gold                   float64
-	hold                   time.Duration
+	every                  time.Duration
 }
 
 func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*flags, []string, error) {
@@ -94,7 +94,7 @@ func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*fl
 	f.fs.BoolVar(&f.volatile, "include-volatile", false, "deals: include volatile items")
 	f.fs.StringVar(&f.out, "out", "", "replay: path of the database to build")
 	f.fs.Float64Var(&f.gold, "gold", 40, "backtest: the player's gold")
-	f.fs.DurationVar(&f.hold, "hold", 24*time.Hour, "backtest: how long a resale listing stays up, unattended")
+	f.fs.DurationVar(&f.every, "every", time.Hour, "backtest: plan at most once per this")
 	// Allow flags after positional args: ahc sell "Heavy Quiver" -house blackwater
 	var pos []string
 	rest := args

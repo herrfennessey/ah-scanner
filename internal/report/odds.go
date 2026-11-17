@@ -13,10 +13,6 @@ const minDeposit = 100
 // (Horde 0.969, Blackwater 0.964): what a relist gives up to be cheapest again.
 const undercutRatio = 0.967
 
-// maxRounds caps the relist rounds in expectedProfit; after that the stock is assumed to sell
-// at the last cut.
-const maxRounds = 5
-
 // sellChanceTable: share of cheapest-when-posted listings that sold within 12 hours, by the
 // sell-out time (days) of the supply near their price, per house.
 var sellChanceTable = map[string][]struct{ days, p float64 }{
@@ -73,21 +69,22 @@ func goneSoon(house string, b *FlipStat) float64 {
 	return 0 // not underpriced enough to be in the measurements
 }
 
-// expectedProfit weighs the outcomes of listing rounds: each sells with chance p; a round that
-// doesn't loses the deposit and relists one typical undercut lower. Returns the expected
-// profit and the expected number of rounds (for the holding time).
-func expectedProfit(gross, cost, deposit int64, p float64) (int64, float64) {
-	var ev, rounds, reach float64 = 0, 0, 1 // reach: chance of getting to this round unsold
+// expectedProfit weighs the listing rounds of a style: each sells with chance p; a round that
+// doesn't loses the deposit and relists one typical undercut lower. Stock still unsold after
+// the last round is worth leftover (its value at the going price), one more deposit lost.
+// Returns the expected profit, the expected number of rounds held (for the holding time) and
+// the chance it all sells within the rounds.
+func expectedProfit(gross, cost, deposit int64, p float64, rounds int, leftover int64) (int64, float64, float64) {
+	var ev, held, reach float64 = 0, 0, 1 // reach: chance of getting to this round unsold
 	price := 1.0
-	for k := 0; k < maxRounds; k++ {
+	for k := 0; k < rounds; k++ {
 		sell := reach * p
-		if k == maxRounds-1 {
-			sell = reach // assume the last round sells
-		}
 		ev += sell * (float64(gross)*price - float64(cost) - float64(deposit)*float64(k))
-		rounds += sell * float64(k+1)
+		held += sell * float64(k+1)
 		reach -= sell
 		price *= undercutRatio
 	}
-	return int64(math.Round(ev)), rounds
+	ev += reach * (float64(leftover) - float64(cost) - float64(deposit)*float64(rounds))
+	held += reach * float64(rounds)
+	return int64(math.Round(ev)), held, 1 - reach
 }

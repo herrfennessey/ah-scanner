@@ -606,7 +606,7 @@ async function renderStatus() {
       </section>`).join("")}</div>`;
 }
 
-/* flips: small, low-risk trades for the gold you have */
+/* flips: small trades for the gold you have and how often you trade */
 const KIND = {
   relist: ["Relist", "Buy listings dumped under the next price and relist just under it, in the same house."],
   cross: ["Cross", "Buy on one house, sell on the other."],
@@ -616,23 +616,25 @@ const KIND = {
 const GOLD_MIN = 5, GOLD_MAX = 2000;
 const toGold = (pos) => Math.round(GOLD_MIN * Math.pow(GOLD_MAX / GOLD_MIN, pos / 1000));
 const toPos = (gold) => Math.round(1000 * Math.log(gold / GOLD_MIN) / Math.log(GOLD_MAX / GOLD_MIN));
-// Mirrors riskProfiles in internal/report/flips.go.
-const RISK = {
-  low: { label: "Low", hours: 6, share: 0.25, roi: 0.15, sales: 20, note: "Busy Horde markets only. Sells within about 6 hours, and survives being undercut twice." },
-  medium: { label: "Medium", hours: 12, share: 0.4, roi: 0.2, sales: 10, note: "Sells within about 12 hours, and survives one undercut." },
-  high: { label: "High", hours: 36, share: 0.6, roi: 0.3, sales: 4, note: "Slower markets and bigger margins. Gold can sit for a day and a half." },
+// Mirrors styleProfiles in internal/report/flips.go.
+const STYLE = {
+  active: { label: "Active", share: 0.5, note: "You check about every hour and relist whenever you're undercut. Post 8h listings; everything should be gone within 12 hours." },
+  regular: { label: "Regular", share: 0.4, note: "You check 4–5 times a day. Post 8h listings; everything should be gone within a day." },
+  away: { label: "Away", share: 0.3, note: "You post once and come back in about 12 hours (morning, then evening). Post 24h listings. Horde only, steady markets only." },
 };
+// The old risk levels, kept in the browser, map to the nearest style.
+const OLD_RISK = { high: "active", medium: "regular", low: "away" };
 
 function renderFlips() {
   const gold = Math.min(GOLD_MAX, Math.max(GOLD_MIN, store.get("gold", 40)));
-  let risk = store.get("risk", "low");
-  if (!Object.hasOwn(RISK, risk)) risk = "low";
+  let style = store.get("style", OLD_RISK[store.get("risk", "")] || "regular");
+  if (!Object.hasOwn(STYLE, style)) style = "regular";
   $("#view").innerHTML = `
     <section class="panel flips-panel">
       <div class="flips-head">
         <div>
           <h2 class="panel-title">Flips</h2>
-          <p class="flips-lede">Small, low-risk trades for the gold you have. Updates itself after every scan; expected profit allows for undercuts and lost deposits.</p>
+          <p class="flips-lede">Small trades for the gold you have and how often you're at the auction house. Updates itself after every scan; expected profit allows for undercuts, lost deposits and stock that doesn't sell.</p>
         </div>
         <div class="gold-control">
           <label for="gold-num">Your gold</label>
@@ -642,9 +644,9 @@ function renderFlips() {
           </div>
           <small id="gold-note"></small>
         </div>
-        <div class="risk-control" role="radiogroup" aria-label="Risk">
-          <span class="risk-label">Risk</span>
-          <div class="risk-seg">${Object.entries(RISK).map(([k, r]) => `<button type="button" role="radio" data-risk="${k}" aria-checked="${k === risk}">${r.label}</button>`).join("")}</div>
+        <div class="risk-control" role="radiogroup" aria-label="How you trade">
+          <span class="risk-label">How you trade</span>
+          <div class="risk-seg">${Object.entries(STYLE).map(([k, r]) => `<button type="button" role="radio" data-style="${k}" aria-checked="${k === style}">${r.label}</button>`).join("")}</div>
           <small id="risk-note"></small>
         </div>
       </div>
@@ -652,27 +654,30 @@ function renderFlips() {
       <details class="rules">
         <summary>How flips are chosen</summary>
         <ul class="reasons">
-          <li>Risk sets how long your gold may sit in stock. Your units <i>plus</i> everything other sellers list within 10% of your price must sell within about 6 hours (low), 12 hours (medium) or a day and a half (high), at the floor sales rate (certain sales only, largest single sale ignored). Busy markets are required too: 20, 10 or 4+ separate sales a day.</li>
-          <li>One flip uses at most 25%, 40% or 60% of your gold, and needs at least a 15%, 20% or 30% return after the AH cut (5% Horde, 15% Blackwater) and an estimated deposit. Below high risk, items whose price swings are left out, and so are sliding markets: a resale more than 15% under market value (for Alliance flips, the Alliance's market value) means the price is falling and could fall further before your stock sells.</li>
-          <li><b>Expected profit</b> weighs what really happens: each time you list, it sells with the measured chance for listings like it (cheapest when posted, same house, same sell-out time). If it doesn't, you lose the deposit and relist a typical undercut (about 3%) lower. Deposits are 20% of the vendor price, 1s minimum per auction, 5× on Blackwater. At low risk the profit must also survive two undercut-and-relist rounds, at medium one.</li>
-          <li>Flips are ranked by expected profit per day of holding, so quick, likely sales come first.</li>
+          <li><b>How you trade</b> is how often you come back to relist what was undercut: about hourly (active), every ~5 hours (regular), or once, about 12 hours later (away). Your units <i>plus</i> everything other sellers list within 10% of your price must sell within the window: 12 hours (active, away) or a day (regular).</li>
+          <li><b>Priced from what buyers pay, not what sellers ask.</b> The resale is capped at the median price actually paid over the last 24 hours, so a market value left over from before a crash can't make a dump look like a bargain. At least 2 purchases at or above your price in the last 12 hours are required, and the amount you buy must fit the recent purchases at or above that price.</li>
+          <li><b>Sliding markets:</b> if the asking price is falling more than 10% a day (measured so one dump can't trigger it), only active traders see the item, priced where the slide will be. A resale more than 15% under market value also counts as a slide.</li>
+          <li><b>Sell chance</b> is measured per item: the share of its listings that were the cheapest when posted and sold before your next visit. Busy items full of undercutters score low here even when they sell a lot. Items with few such listings lean on the house average.</li>
+          <li><b>Expected profit</b> weighs your visits: each listing round sells with that chance; one that doesn't loses the deposit and relists a typical undercut (about 3%) lower. Stock still unsold when the window ends is valued at the price buyers are paying then, not assumed sold. Deposits are 20% of the vendor price, 1s minimum per auction, 5× on Blackwater.</li>
+          <li><b>What a scan can't see:</b> a vanished piece of gear may have been cancelled, so it only counts as sold if no cheaper copy outlasted it. Anything listed and bought within the same hour is never seen, so demand is, if anything, undercounted.</li>
+          <li>One flip uses at most 50%, 40% or 30% of your gold, and needs at least a 15%, 20% or 25% return after the AH cut (5% Horde, 15% Blackwater). Items whose price swings are left to active traders.</li>
+          <li>Flips are ranked by expected profit per day your gold is tied up, so quick, likely sales come first.</li>
           <li><b>Going fast:</b> about half of underpriced listings are gone within an hour of a scan; the badge marks the kind that goes fastest. Buy soon after a scan or skip it.</li>
-          <li>Resale is never above the item's market value, and is just under the cheapest competing listing. On Blackwater it's also under what buyers pay at home (the dearer of the Horde and Alliance prices), since everyone shopping there has a faction auction house too.</li>
           <li><b>Relist:</b> buy listings dumped well below the next price in a house, then relist just under that next price. It never buys out a market.</li>
-          <li><b>Cross:</b> buy on Blackwater, sell on Horde. Low risk only sells on Horde: Blackwater has a 15% cut, a 5× deposit, a sixth of Horde's buyers and faster undercuts.</li>
-          <li><b>Alliance</b> (medium and high risk): buy on Horde, sell on Blackwater at least 5% under what Alliance players pay at home, only for items the Alliance buys often (the same sales-a-day bar). Blackwater's own price only matters as competition.</li>
+          <li><b>Cross:</b> buy on Blackwater, sell on Horde. Away only sells on Horde: Blackwater has a 15% cut, a 5× deposit, a sixth of Horde's buyers and faster undercuts.</li>
+          <li><b>Alliance</b> (active and regular): buy on Horde, sell on Blackwater at least 5% under what Alliance players pay at home, only for items the Alliance buys often. On Blackwater, never above what buyers pay at home.</li>
         </ul>
       </details>
     </section>`;
   const range = $("#gold-range"), num = $("#gold-num");
   let timer, cur = gold;
   const refresh = () => {
-    const r = RISK[risk], most = cur * r.share;
+    const r = STYLE[style], most = cur * r.share;
     $("#gold-note").textContent = `One flip uses at most ${most >= 1 ? Math.floor(most) + "g" : Math.round(r.share * 100) + "%"}.`;
     $("#risk-note").textContent = r.note;
-    document.querySelectorAll("[data-risk]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.risk === risk)));
+    document.querySelectorAll("[data-style]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.style === style)));
     clearTimeout(timer);
-    timer = setTimeout(() => loadFlips(cur, risk), 120);
+    timer = setTimeout(() => loadFlips(cur, style), 120);
   };
   const set = (g, from) => {
     g = Math.min(GOLD_MAX, Math.max(GOLD_MIN, Math.round(g)));
@@ -684,9 +689,9 @@ function renderFlips() {
   };
   range.addEventListener("input", () => set(toGold(+range.value), "range"));
   num.addEventListener("input", () => { const v = parseFloat(num.value); if (v > 0) set(v, "num"); });
-  document.querySelectorAll("[data-risk]").forEach((b) => b.addEventListener("click", () => {
-    risk = b.dataset.risk;
-    store.set("risk", risk);
+  document.querySelectorAll("[data-style]").forEach((b) => b.addEventListener("click", () => {
+    style = b.dataset.style;
+    store.set("style", style);
     refresh();
   }));
   set(gold);
@@ -694,9 +699,9 @@ function renderFlips() {
 
 // Live updates: the page polls a cheap version endpoint and reloads the flips after each scan,
 // marking flips that weren't there before and showing a toast (for a second monitor).
-// gold/risk are what the table shows; want is what the controls last asked for, which the
+// gold/style are what the table shows; want is what the controls last asked for, which the
 // poll uses so a background refresh never reverts a change that is still loading.
-const live = { gold: 0, risk: "", want: null, computed: 0, keys: null, newCount: 0, timer: 0, tick: 0 };
+const live = { gold: 0, style: "", want: null, computed: 0, keys: null, newCount: 0, timer: 0, tick: 0 };
 const flipKey = (f) => `${f.item_id}:${f.variant || ""}:${f.buy_house}>${f.sell_house}`;
 
 function startLive() {
@@ -704,7 +709,7 @@ function startLive() {
   live.timer = setInterval(async () => {
     try {
       const v = await api("/api/flips/version");
-      if (v.computed_at > live.computed && live.computed) loadFlips(live.want.gold, live.want.risk, true);
+      if (v.computed_at > live.computed && live.computed) loadFlips(live.want.gold, live.want.style, true);
     } catch { /* collector briefly unreachable: try again next tick */ }
   }, 20000);
   live.tick = setInterval(updateAge, 30000);
@@ -740,22 +745,22 @@ function toast(html) {
 }
 
 let flipsSeq = 0;
-async function loadFlips(gold, risk, fromScan = false) {
+async function loadFlips(gold, style, fromScan = false) {
   const seq = ++flipsSeq;
-  if (!fromScan) live.want = { gold, risk };
+  if (!fromScan) live.want = { gold, style };
   let r;
-  try { r = await api(`/api/flips?gold=${gold}&risk=${risk}&limit=30`); }
+  try { r = await api(`/api/flips?gold=${gold}&style=${style}&limit=30`); }
   catch (err) {
     const out = $("#flips-out");
     if (out && seq === flipsSeq) out.innerHTML = emptyState("No flips yet", esc(err.message));
     return;
   }
-  // A slower response for an earlier gold amount or risk must not overwrite a newer one.
+  // A slower response for an earlier gold amount or style must not overwrite a newer one.
   const out = $("#flips-out");
   if (!out || seq !== flipsSeq) return;
-  // New flips: only meaningful when the scan changed, not when gold or risk did.
+  // New flips: only meaningful when the scan changed, not when gold or style did.
   const keys = new Set(r.flips.map(flipKey));
-  const sameView = live.gold === gold && live.risk === risk;
+  const sameView = live.gold === gold && live.style === style;
   const prevKeys = live.keys; // live.keys is replaced below, before the rows are drawn
   const isNew = (f) => fromScan && sameView && prevKeys && !prevKeys.has(flipKey(f));
   const fresh = r.flips.filter(isNew).length;
@@ -767,13 +772,13 @@ async function loadFlips(gold, risk, fromScan = false) {
       document.title = `(${live.newCount}) ${document.title.replace(/^\(\d+\) /, "")}`;
     }
   }
-  Object.assign(live, { gold, risk, computed: r.computed_at, keys });
+  Object.assign(live, { gold, style, computed: r.computed_at, keys });
   if (!live.timer) startLive();
   const updated = `<p class="fine">Listings as of the scan <span id="scan-age">${ago(r.computed_at)}</span>; this page updates itself after each scan. About half of underpriced listings are gone within an hour of a scan.${
     r.confidence === "good" ? "" : r.confidence === "early" ? " Early estimate: under 3 days of sales history." : " Fair estimate: under 10 days of history."}${
     r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Alliance flips are off."}</p>`;
   if (!r.flips.length) {
-    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g at ${RISK[risk].label.toLowerCase()} risk right now`, "That's a normal answer: nothing cheap enough sells fast enough. A higher risk level allows slower markets. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
+    out.innerHTML = emptyState(`Nothing qualifies with ${gold}g for ${STYLE[style].label.toLowerCase()} trading right now`, "That's a normal answer: nothing cheap enough sells fast enough, at a price buyers are paying. Checking more often (active) allows busier, faster-moving markets. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
     return;
   }
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
@@ -785,8 +790,9 @@ async function loadFlips(gold, risk, fromScan = false) {
         <a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a><span class="sub-num why">${esc(f.why)}</span></td>
       <td data-label="Buy">${count(f.buy_units)} on ${factionName(f.buy_house)}<span class="sub-num">up to ${plain(f.buy_up_to_price)} each</span></td>
       <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold${f.deposit_at_risk ? ` · ${plain(f.deposit_at_risk)} deposit` : ""}</span></td>
-      <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}</span></td>
-      <td data-label="Expected profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.sell_chance)} chance each listing sells · ${plain(f.profit_if_sold)} if it all sells · ${plain(f.profit_per_day)} a day</span></td>
+      <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}, ${f.list_hours}h listing${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}${
+        f.recent_price ? ` · buyers paid ${plain(f.recent_price)} lately` : ""}${f.recent_sales_above ? ` · ${f.recent_sales_above} bought at this price or more in 12 h` : ""}</span></td>
+      <td data-label="Expected profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.sell_chance)} chance it sells before your next visit · ${pct(f.sold_out_chance)} it all sells in time · ${plain(f.profit_if_sold)} if it all sells · ${plain(f.profit_per_day)} a day</span></td>
       <td data-label="Sold out in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}<span class="sub-num">${f.competing_units ? `${count(f.competing_units)} others listed near your price` : "no one else near your price"} · ${Math.round(f.sales_per_day)} sales a day</span></td></tr>`).join("")}</tbody>
   </table></div>${updated}`;
 }
@@ -795,9 +801,9 @@ function funnelTable(funnel) {
   const routes = Object.entries(funnel || {}).filter(([, f]) => f.candidates > 0).sort();
   if (!routes.length) return "";
   return `<div class="scroll-x"><table class="mini funnel">
-    <thead><tr><th>Route</th><th>Items checked</th><th>Sells too slowly</th><th>Price falling</th><th>Deposit too high</th><th>No price gap</th><th>Needs more gold</th><th>Not listed to buy</th></tr></thead>
+    <thead><tr><th>Route</th><th>Items checked</th><th>Sells too slowly</th><th>Nobody paid it lately</th><th>Price falling</th><th>Deposit too high</th><th>No price gap</th><th>Needs more gold</th><th>Not listed to buy</th></tr></thead>
     <tbody>${routes.map(([route, f]) => `<tr><td>${esc(route.replace(/(^|→ )(\w)/g, (m) => m.toUpperCase()))}</td><td>${count(f.candidates)}</td>
-      <td>${count(f.sells_too_slowly)}</td><td>${count(f.price_falling || 0)}</td><td>${count(f.deposit_too_high || 0)}</td><td>${count(f.no_profitable_gap)}</td><td>${count(f.needs_more_gold)}</td><td>${count(f.not_listed_to_buy)}</td></tr>`).join("")}</tbody>
+      <td>${count(f.sells_too_slowly)}</td><td>${count(f.unproven || 0)}</td><td>${count(f.price_falling || 0)}</td><td>${count(f.deposit_too_high || 0)}</td><td>${count(f.no_profitable_gap)}</td><td>${count(f.needs_more_gold)}</td><td>${count(f.not_listed_to_buy)}</td></tr>`).join("")}</tbody>
   </table></div>`;
 }
 

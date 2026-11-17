@@ -17,7 +17,7 @@ import (
 type flipsResult struct {
 	Flips      []report.Flip                 `json:"flips"`
 	Gold       int64                         `json:"gold"`
-	Risk       report.Risk                   `json:"risk" jsonschema:"low, medium or high: how long gold may sit in stock"`
+	Style      report.Style                  `json:"style" jsonschema:"active, regular or away: how often the player comes back to relist"`
 	ComputedAt int64                         `json:"computed_at"`
 	Confidence string                        `json:"confidence" jsonschema:"early (<3 days of history), fair (<10 days) or good"`
 	Funnel     map[string]*report.FlipFunnel `json:"funnel" jsonschema:"per route: how many items each rule rejected"`
@@ -54,13 +54,13 @@ func (s *Server) flipInputs(ctx context.Context) (*report.FlipInputs, error) {
 	return in, nil
 }
 
-func (s *Server) flips(ctx context.Context, gold int64, risk string, limit int) (*flipsResult, error) {
+func (s *Server) flips(ctx context.Context, gold int64, style string, limit int) (*flipsResult, error) {
 	in, err := s.flipInputs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	r := report.ParseRisk(risk)
-	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Risk: r, Limit: limit})
+	r := report.ParseStyle(style)
+	f, funnel, gold := report.PlanFlips(in, report.FlipOptions{Gold: gold, Style: r, Limit: limit})
 	if f == nil {
 		f = []report.Flip{}
 	}
@@ -73,7 +73,7 @@ func (s *Server) flips(ctx context.Context, gold int64, risk string, limit int) 
 			}
 		}
 	}
-	return &flipsResult{Flips: f, Gold: gold, Risk: r, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
+	return &flipsResult{Flips: f, Gold: gold, Style: r, ComputedAt: in.ComputedAt, Confidence: in.Confidence(), Funnel: funnel, Alliance: ally}, nil
 }
 
 // apiFlipsVersion is a cheap poll for the page: the time the flip inputs were last rebuilt.
@@ -93,11 +93,19 @@ func (s *Server) apiFlips(w http.ResponseWriter, r *http.Request) {
 		limit = 15
 	}
 	start := time.Now()
-	res, err := s.flips(r.Context(), int64(gold*10000), r.URL.Query().Get("risk"), max(1, min(limit, 100)))
+	res, err := s.flips(r.Context(), int64(gold*10000), styleParam(r), max(1, min(limit, 100)))
 	if err != nil {
 		fail(w, 503, err)
 		return
 	}
 	w.Header().Set("Server-Timing", "plan;dur="+strconv.FormatInt(time.Since(start).Milliseconds(), 10))
 	writeJSON(w, res)
+}
+
+// styleParam reads ?style=, or the old ?risk= (low, medium, high map to away, regular, active).
+func styleParam(r *http.Request) string {
+	if v := r.URL.Query().Get("style"); v != "" {
+		return v
+	}
+	return r.URL.Query().Get("risk")
 }

@@ -18,6 +18,12 @@ import (
 
 func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *flags) error {
 	now := time.Now()
+	// The sell rates need auction.front; databases from before it was tracked lack it.
+	if n, err := st.BackfillFront(ctx, now.AddDate(0, 0, -f.days-4).Unix()); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "ahc: marked %d older auctions as cheapest-when-posted or not\n", n)
+	}
 	// And gear "sales" from before tracker rule 4c (a cheaper copy outlasted it): reclassify the
 	// window and roll its days up again, as the collector does once at startup.
 	from := now.AddDate(0, 0, -f.days-1)
@@ -31,33 +37,33 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 		}
 	}
 	trades, err := backtest.Run(ctx, st, backtest.Options{From: now.AddDate(0, 0, -f.days), To: now,
-		Hold: f.hold, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate})
+		Every: f.every, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate})
 	if err != nil {
 		return err
 	}
 	if f.csv {
 		w := csv.NewWriter(os.Stdout)
-		w.Write([]string{"at", "risk", "item", "kind", "buy_house", "sell_house", "units", "cost", "sell_at", "expected", "sold", "cash", "marked", "floor", "hours"})
+		w.Write([]string{"at", "style", "item", "kind", "buy_house", "sell_house", "units", "cost", "sell_at", "expected", "sold", "cash", "marked", "floor", "hours", "relists"})
 		for _, t := range trades {
 			x := t.Flip
-			w.Write([]string{time.Unix(t.At, 0).UTC().Format(time.RFC3339), string(t.Risk), x.Name, x.Kind, x.BuyHouse, x.SellHouse,
+			w.Write([]string{time.Unix(t.At, 0).UTC().Format(time.RFC3339), string(t.Style), x.Name, x.Kind, x.BuyHouse, x.SellHouse,
 				fmt.Sprint(x.BuyUnits), fmt.Sprint(x.BuyCost), fmt.Sprint(x.SellAt), fmt.Sprint(x.Expected),
-				fmt.Sprint(t.Sold), fmt.Sprint(t.Cash), fmt.Sprint(t.Marked), fmt.Sprint(t.Floor), fmt.Sprintf("%.1f", t.Hours)})
+				fmt.Sprint(t.Sold), fmt.Sprint(t.Cash), fmt.Sprint(t.Marked), fmt.Sprint(t.Floor), fmt.Sprintf("%.1f", t.Hours), fmt.Sprint(t.Relists)})
 		}
 		w.Flush()
 		return w.Error()
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintf(tw, "risk\ttrades\tcost\tpromised\tcash\tmarked\tunits sold\tsold out\tlosing\tmedian h\t\n")
+	fmt.Fprintf(tw, "style\ttrades\tcost\tpromised\tcash\tmarked\tunits sold\tsold out\tlosing\tmedian h\t\n")
 	for _, s := range backtest.Summarize(trades) {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.1f\t\n", s.Risk, s.Trades, report.Gold(s.Cost), report.Gold(s.Expected),
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.1f\t\n", s.Style, s.Trades, report.Gold(s.Cost), report.Gold(s.Expected),
 			report.Gold(s.Cash), report.Gold(s.Marked), 100*s.UnitsSold, 100*s.AllSold, 100*s.Losing, s.MedianHold)
 	}
 	tw.Flush()
-	// The items that cost the most, per risk level.
+	// The items that cost the most, per style.
 	byItem := map[string]int64{}
 	for _, t := range trades {
-		byItem[string(t.Risk)+"\t"+t.Flip.Name] += t.Marked
+		byItem[string(t.Style)+"\t"+t.Flip.Name] += t.Marked
 	}
 	type kv struct {
 		k string

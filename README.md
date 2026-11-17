@@ -1,42 +1,60 @@
 # ah-scanner (`ahc`)
 
 A private price and sell-through history for the WoW Forever **EU PvP Horde and Blackwater**
-auction houses, built from Blizzard's API. The web UI opens on **Flips**: small, low-risk
-trades sized to the gold you have (a slider, default 40g) and your risk appetite (low by
-default):
+auction houses, built from Blizzard's API. The web UI opens on **Flips**: small trades sized
+to the gold you have (a slider, default 40g) and how you trade (regular by default):
 
 - **Relist:** listings dumped well under the next price in a house; buy them, relist just under.
 - **Cross:** cheaper on Blackwater than it reliably sells for on Horde.
 - **Alliance:** cheaper on Horde than Alliance players pay at home, for items the Alliance buys
   several times a day; sold to them on Blackwater.
 
-Risk is how long your gold may sit in stock. Your units plus everything others list within 10%
-of your price must sell out at the floor sales rate within:
+How you trade is how often you come back to relist what was undercut, and so how long a flip
+has to work without you. Your units plus everything others list within 10% of your price must
+sell out within the window, at the rate buyers lately paid your price or more:
 
-| Risk | Sold out within | Sales a day | Gold per flip | Min return | Swinging or sliding prices | Undercuts survived | Sells on |
-|------|-----------------|-------------|---------------|------------|----------------------------|--------------------|----------|
-| low (default) | ~6 h | 20+ | 25% | 15% | no | 2 | Horde only |
-| medium | ~12 h | 10+ | 40% | 20% | no | 1 | Horde, Blackwater |
-| high | ~1.5 days | 4+ | 60% | 30% | yes | 0 | Horde, Blackwater |
+| Style | Visits | Listing | Window | Gold per flip | Min return | Swinging or sliding prices | Sells on |
+|-------|--------|---------|--------|---------------|------------|----------------------------|----------|
+| active | about hourly | 8h | 12 h | 50% | 15% | yes, priced where the slide will be | Horde, Blackwater |
+| regular (default) | every ~5 h | 8h | 1 day | 40% | 20% | no | Horde, Blackwater |
+| away | once, ~12 h later | 24h | 12 h | 30% | 25% | no | Horde only |
 
-**Expected profit** ranks the flips. Each listing round sells with the measured chance for
-listings like it: cheapest when posted, same house, same sell-out time, from a backtest of the
-history (`internal/report/odds.go`). A round that doesn't sell loses the deposit and relists
-one typical undercut (about 3%) lower. Deposits are 20% of the vendor price with a 1s minimum
-per auction (confirmed against Journalator posting logs), 5× on Blackwater (`deposit_factor`);
-the cut is 5% on faction houses and 15% on Blackwater. "Undercuts survived" is how many
-cancel-and-relist rounds the profit must also cover. Low risk only sells on Horde: Blackwater
-has the bigger cut and deposit, a sixth of the buyers and faster undercuts.
+Every flip is judged on what buyers do, not what sellers ask:
+
+- The resale is capped at the **median price paid** over the last 24 hours, so a 7-day market
+  value left over from before a crash can't make a dump look like a bargain.
+- At least **2 purchases at or above the resale price** in the last 12 hours, and the amount
+  bought must fit the purchases at or above that price over the last 2 days.
+- **Sliding markets:** an asking price falling over 10% a day (the median ask, by Theil-Sen, so
+  one dump can't trigger it) is left to active traders; a resale more than 15% under market
+  value counts as a slide too.
+- **Sell chance** is per item: the share of its listings that were the cheapest when posted
+  (`auction.front`) and sold before the next visit, blended with the house average when the
+  item has few. Busy markets full of undercutters score low even if they sell a lot.
+
+**Expected profit** weighs the style's visits: each listing round sells with that chance; one
+that doesn't loses the deposit and relists one typical undercut (about 3%) lower. Stock still
+unsold at the end of the window is valued at the price buyers are paying then, not assumed sold.
+Deposits are 20% of the vendor price with a 1s minimum per auction (confirmed against
+Journalator posting logs), 5× on Blackwater (`deposit_factor`); how the deposit grows with
+listing length isn't known yet, and most flipped items sit at the 1s minimum anyway. The cut is
+5% on faction houses and 15% on Blackwater.
+
+What a scan can see: a commodity listing that loses units, or vanishes with nothing cheaper
+left, was bought (commodities fill cheapest first). Vanished gear may have been cancelled, so it
+counts only if no cheaper copy outlasted it. Anything listed and bought within one scan
+interval is never seen, so demand is, if anything, undercounted.
 
 The Flips page updates itself after every scan: new flips get a badge, a toast appears and the
 tab title shows the count. **Going fast** marks the listings most likely to be gone within the
-hour; about half of all underpriced listings are.
+hour; about half of all underpriced listings are. Flips are ranked by expected profit per day
+your gold is tied up. On Blackwater, resale is never above the dearer of the Horde and Alliance
+prices (every Blackwater buyer can buy at home instead).
 
-Below high risk, sliding markets are skipped too: a resale more than 15% under market value
-(the Alliance's, for Alliance flips) means the price is falling. Flips are ranked by expected
-profit per day of holding, so fast, likely sales come first; resale is never
-above market value, nor on Blackwater above the dearer of the Horde and Alliance prices
-(every Blackwater buyer can buy at home instead).
+`ahc backtest -days 4` replays the planner at every past scan, with the inputs as they were then,
+and scores each flip per style: the resale fills only from buyers who really paid at least its
+price afterwards, unsold stock is relisted under the cheapest listing at each visit (never under
+cost) and valued at the floor when the window ends. `-csv` lists every trade.
 
 **Supply** plans Durotar Supply and Logistics hand-ins at Horde prices:
 
@@ -208,7 +226,7 @@ claude mcp add --transport http ahc http://<nuc>:4653/mcp \
   --header "Authorization: Bearer $AHC_MCP_TOKEN"
 ```
 
-Tools (all read-only): `flips` (with your gold and risk), `sell_advice` (when to post an item),
+Tools (all read-only): `flips` (with your gold and trading style), `sell_advice` (when to post an item),
 `search_items`, `item_summary`, `movers`, `collector_status`.
 
 ## How the numbers are worked out
@@ -222,8 +240,11 @@ Descriptive statistics and one simple stochastic model, chosen for a short, nois
   lucky auction can't make a time slot look great), with an 80% Beta interval covering both
   "did it sell?" and "how many auctions?". Uses gonum.
 - **Flips:** sales speed comes from daily counts of separate confirmed sales, with the single
-  largest sale removed (one bulk buyer or a misread cancel can't make a market look liquid).
-  The expensive part is computed right after each publish; your gold is applied per request.
+  largest sale removed (one bulk buyer or a misread cancel can't make a market look liquid),
+  and is capped by the recent purchases at or above the resale price. The expensive part,
+  including the evidence (recent purchase ladders in 3% price steps, the median paid, the trend
+  and the cheapest-when-posted sell rates), is computed right after each publish; your gold and
+  style are applied per request.
 - **Thresholds** (hold below 80% of market value, a glut at 1.4× normal supply, and similar) are
   heuristics until a few weeks of outcomes allow backtesting them.
 

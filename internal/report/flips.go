@@ -36,6 +36,13 @@ type FlipLevel struct {
 	Q int64 `json:"q"` // units
 }
 
+// SaleLevel is one price step of recent purchases.
+type SaleLevel struct {
+	P int64 `json:"p"` // unit price, rounded down to a 3% step
+	Q int64 `json:"q"` // units
+	N int64 `json:"n"` // separate sales
+}
+
 // FlipStat is one item on one house.
 type FlipStat struct {
 	Fair         int64       `json:"fair"`           // 7-day market value
@@ -50,6 +57,14 @@ type FlipStat struct {
 	// Beyond is the price of the first level left out of a truncated Book (0 = Book is
 	// complete), so buying the whole cached book can't hide the next competing listing.
 	Beyond int64 `json:"beyond,omitempty"`
+
+	// Evidence (tracked houses, see evidence.go): set when the fields below were measured.
+	Evidence bool        `json:"evidence,omitempty"`
+	Sold12   []SaleLevel `json:"sold12,omitempty"`   // certain sales in the last 12 h, in 3% price steps
+	Sold48   []SaleLevel `json:"sold48,omitempty"`   // the same over 48 h
+	Clearing int64       `json:"clearing,omitempty"` // median price of the sales in the last 24 h (3+ sales)
+	Trend    float64     `json:"trend,omitempty"`    // daily change of the median asking price over 24 h
+	Front    *FrontStat  `json:"front,omitempty"`    // how listings that were cheapest when posted sold
 }
 
 type FlipItem struct {
@@ -66,6 +81,9 @@ type FlipInputs struct {
 	SpanDays   float64     `json:"span_days"` // history behind the sales rates
 	Houses     []FlipHouse `json:"houses"`
 	Items      []FlipItem  `json:"items"`
+	// Front is each tracked house's sell rate for cheapest-when-posted listings, by faction:
+	// the prior for items with few of their own.
+	Front map[string]*FrontStat `json:"front,omitempty"`
 }
 
 func (in *FlipInputs) Confidence() string {
@@ -292,6 +310,18 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 		rows.Close()
 	}
 
+	in.Front = map[string]*FrontStat{}
+	for _, h := range houses {
+		if !h.Tracked || len(keep) == 0 {
+			continue
+		}
+		f, err := addEvidence(ctx, st.DB, h.ID, h.Faction, keep, at, stats)
+		if err != nil {
+			return nil, err
+		}
+		in.Front[h.Faction] = f
+	}
+
 	names, err := LoadNames(ctx, st.DB)
 	if err != nil {
 		return nil, err
@@ -348,87 +378,94 @@ func bookRows(ctx context.Context, db *sql.DB, house int64, want []Key, past boo
 		house, t, house, "["+strings.Join(ids, ",")+"]", t, t)
 }
 
-// Risk is how long the player is willing to tie gold up in stock.
-type Risk string
+// Style is how the player trades: how often they come back to the auction house to relist
+// what was undercut, and so how long a flip has to work without them.
+type Style string
 
 const (
-	RiskLow    Risk = "low"    // quick turnover: busy markets, sold within hours
-	RiskMedium Risk = "medium" // within half a day
-	RiskHigh   Risk = "high"   // slower markets and bigger margins, up to a day and a half
+	StyleActive  Style = "active"  // checks about hourly and relists whenever undercut
+	StyleRegular Style = "regular" // checks 4-5 times a day
+	StyleAway    Style = "away"    // posts a long listing and is back in about 12 hours
 )
 
-// riskProfile is what a risk level means in numbers.
-type riskProfile struct {
-	MinSalesPerDay float64 // separate sales per day in the market that absorbs the resale
-	MaxClearDays   float64 // our units plus the competing supply near our price must sell within this
-	MaxShare       float64 // most of the gold one flip may use
-	MinROI         float64
-	AllowVolatile  bool
-	// Relists: extra cancel-and-relist rounds (each losing a deposit) the profit must survive
-	// beyond the one already counted, so being undercut doesn't turn the flip into a loss.
-	Relists int
+// styleProfile is what a style means in numbers.
+type styleProfile struct {
+	CheckHours  float64 // between visits: one listing round
+	ListHours   float64 // listing duration posted (long enough to last until the next visit)
+	WindowHours float64 // the stock should be gone by then; what's left is valued at the going price
+	MaxShare    float64 // most of the gold one flip may use
+	MinROI      float64
+	MinSales    float64 // separate sales per day in the market that absorbs the resale
+	// AllowVolatile: only a player who's there to react can trade items whose price swings.
+	AllowVolatile bool
 	// SellBlackwater allows routes that resell on Blackwater: 15% cut, 5x deposit, a sixth of
-	// Horde's buyers and faster undercuts, so only from medium risk.
+	// Horde's buyers and faster undercuts, so not for a player who's away.
 	SellBlackwater bool
 }
 
-var riskProfiles = map[Risk]riskProfile{
-	RiskLow:    {MinSalesPerDay: 20, MaxClearDays: 0.25, MaxShare: 0.25, MinROI: 0.15, Relists: 2},
-	RiskMedium: {MinSalesPerDay: 10, MaxClearDays: 0.5, MaxShare: 0.4, MinROI: 0.2, Relists: 1, SellBlackwater: true},
-	RiskHigh:   {MinSalesPerDay: 4, MaxClearDays: 1.5, MaxShare: 0.6, MinROI: 0.3, AllowVolatile: true, SellBlackwater: true},
+var styleProfiles = map[Style]styleProfile{
+	StyleActive:  {CheckHours: 1, ListHours: 8, WindowHours: 12, MaxShare: 0.5, MinROI: 0.15, MinSales: 6, AllowVolatile: true, SellBlackwater: true},
+	StyleRegular: {CheckHours: 5, ListHours: 8, WindowHours: 24, MaxShare: 0.4, MinROI: 0.2, MinSales: 4, SellBlackwater: true},
+	StyleAway:    {CheckHours: 12, ListHours: 24, WindowHours: 12, MaxShare: 0.3, MinROI: 0.25, MinSales: 4},
 }
 
-// ParseRisk accepts low, medium or high (default low).
-func ParseRisk(s string) Risk {
-	if _, ok := riskProfiles[Risk(s)]; ok {
-		return Risk(s)
+// ParseStyle accepts active, regular or away (default regular). The old risk levels map to
+// the nearest style: high to active, medium to regular, low to away.
+func ParseStyle(s string) Style {
+	switch s {
+	case "high":
+		return StyleActive
+	case "medium":
+		return StyleRegular
+	case "low":
+		return StyleAway
 	}
-	return RiskLow
+	if _, ok := styleProfiles[Style(s)]; ok {
+		return Style(s)
+	}
+	return StyleRegular
 }
 
 // competeBand: listings up to this much above our price compete with us for the same buyers,
 // since sellers undercut each other.
 const competeBand = 1.10
 
-// FlipOptions are the player's gold and risk settings. Zero fields come from the risk level.
+// FlipOptions are the player's gold and trading style. Zero fields come from the style.
 type FlipOptions struct {
 	Gold      int64 // copper the player has; default 40g
-	Risk      Risk  // default low
+	Style     Style // default regular
 	MaxShare  float64
 	MinROI    float64
-	MaxClear  float64 // days
 	MinSales  float64 // separate sales per day
 	MinProfit int64   // default 0.25% of gold, between 10s and 50s
 	Volatile  bool    // allow items whose price swings
-	Relists   int     // extra lost deposits the profit must survive (from the risk level)
-	// SellBlackwater allows reselling on Blackwater (from the risk level).
+	// SellBlackwater allows reselling on Blackwater (from the style).
 	SellBlackwater bool
 	Limit          int
 	// Horde → Blackwater: the Alliance must buy it fast and pay more at home.
 	AllyEdge    float64 // your Blackwater price must be this much under Alliance's, default 0.05
 	AllyCapture float64 // share of Alliance demand assumed to come to Blackwater, default 0.1
+
+	p styleProfile
 }
 
 func (o FlipOptions) withDefaults() FlipOptions {
 	if o.Gold <= 0 {
 		o.Gold = 40 * 10000
 	}
-	o.Risk = ParseRisk(string(o.Risk))
-	p := riskProfiles[o.Risk]
+	o.Style = ParseStyle(string(o.Style))
+	p := styleProfiles[o.Style]
+	o.p = p
 	if o.MaxShare <= 0 {
 		o.MaxShare = p.MaxShare
 	}
 	if o.MinROI <= 0 {
 		o.MinROI = p.MinROI
 	}
-	if o.MaxClear <= 0 {
-		o.MaxClear = p.MaxClearDays
-	}
 	if o.MinSales <= 0 {
-		o.MinSales = p.MinSalesPerDay
+		o.MinSales = p.MinSales
 	}
 	o.Volatile = o.Volatile || p.AllowVolatile
-	o.Relists = max(o.Relists, p.Relists)
 	o.SellBlackwater = o.SellBlackwater || p.SellBlackwater
 	if o.MinProfit <= 0 {
 		// Scales gently: a quick, sure 50s is worth showing whatever the budget.
@@ -443,6 +480,9 @@ func (o FlipOptions) withDefaults() FlipOptions {
 	return o
 }
 
+// rounds is how many listing rounds fit in the window: visits at which unsold stock is relisted.
+func (p styleProfile) rounds() int { return max(1, int(math.Round(p.WindowHours/p.CheckHours))) }
+
 // Flip is one recommended trade.
 type Flip struct {
 	ItemID    int64  `json:"item_id"`
@@ -455,21 +495,26 @@ type Flip struct {
 	BuyUpTo   int64  `json:"buy_up_to_price"`
 	BuyCost   int64  `json:"buy_cost"`
 	SellAt    int64  `json:"sell_at"`
-	// Profit is after the cut and one lost deposit, if all sell at sell_at. A deposit comes back
-	// when the item sells; counting one lost anyway covers one cancel-and-relist after an undercut.
+	ListHours int    `json:"list_hours" jsonschema:"listing duration to post: long enough to last until your next visit"`
+	// Profit is after the cut and one lost deposit, if all sell at sell_at.
 	Profit int64 `json:"profit_if_sold" jsonschema:"profit if every unit sells at sell_at, after the cut and one lost deposit"`
-	// Expected is the probability-weighted profit: each listing round sells with SellChance; a
-	// round that doesn't costs the deposit and a typical undercut before relisting.
-	Expected      int64   `json:"expected_profit" jsonschema:"profit weighted by the measured chance of selling before being undercut, counting lost deposits and price cuts on relists: the ranking basis"`
-	SellChance    float64 `json:"sell_chance" jsonschema:"measured share of comparable listings (cheapest when posted, same sell-out time, same house) that sold within 12 hours"`
+	// Expected weighs the listing rounds of the style: each sells with SellChance; one that
+	// doesn't costs the deposit and a typical undercut. Stock left at the end of the window is
+	// valued at the going price.
+	Expected      int64   `json:"expected_profit" jsonschema:"profit weighted by the measured chance each visit's listing sells, counting lost deposits and price cuts on relists, and valuing stock still unsold at the end of the style's window at the going price"`
+	SellChance    float64 `json:"sell_chance" jsonschema:"measured share of this item's units, listed as the cheapest, that sold before your next visit (blended with the house's rate when the item has few such listings)"`
+	SoldOut       float64 `json:"sold_out_chance" jsonschema:"chance everything sells within the style's window, at that per-visit chance"`
 	GoneSoon      float64 `json:"gone_soon" jsonschema:"measured share of listings this far under market value that are gone within an hour of being seen: how fast to act"`
 	DepositAtRisk int64   `json:"deposit_at_risk" jsonschema:"deposit paid to list your units, lost if they expire or you cancel to undercut (Blackwater's deposit is 5x a faction house's)"`
 	ROI           float64 `json:"roi"`
 	ShareOfGold   float64 `json:"share_of_gold"`
-	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the floor sales rate"`
+	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the recent rate of purchases at or above your price"`
 	Competing     int64   `json:"competing_units" jsonschema:"units other sellers list within 10% of your price"`
-	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): how fast this flip earns, the ranking key"`
+	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): the ranking key"`
 	SalesPerDay   float64 `json:"sales_per_day" jsonschema:"separate sales per day in the market that absorbs the resale"`
+	RecentAbove   int64   `json:"recent_sales_above" jsonschema:"separate purchases at or above sell_at in the last 12 hours: proof buyers still pay it"`
+	Clearing      int64   `json:"recent_price,omitempty" jsonschema:"median price actually paid over the last 24 hours"`
+	Trend         float64 `json:"trend" jsonschema:"daily change of the asking price over the last 24 hours (-0.1 = falling 10% a day)"`
 	AlliancePrice int64   `json:"alliance_price,omitempty"`
 	Why           string  `json:"why"`
 }
@@ -479,8 +524,9 @@ type FlipFunnel struct {
 	Candidates   int `json:"candidates"`
 	NoBuyListing int `json:"not_listed_to_buy"`
 	SlowSales    int `json:"sells_too_slowly"`  // resale market too slow or too thin
-	Falling      int `json:"price_falling"`     // resale would be well under market value: a slide
-	Deposit      int `json:"deposit_too_high"`  // a few undercut-and-relist rounds would eat the profit
+	Falling      int `json:"price_falling"`     // the price is sliding: by the trend, or resale well under market value
+	Unproven     int `json:"unproven"`          // nobody recently paid the resale price
+	Deposit      int `json:"deposit_too_high"`  // relist rounds and unsold stock would eat the profit
 	NoGap        int `json:"no_profitable_gap"` // nothing cheap enough for the margin
 	OverBudget   int `json:"needs_more_gold"`   // gap exists but not within this budget/profit floor
 	Passed       int `json:"passed"`
@@ -527,7 +573,7 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 					fn.NoBuyListing++
 					continue
 				}
-				f, reason := planOne(it, b, s, buy, sell, kind, ally, maxSpend, o)
+				f, reason := planOne(it, b, s, buy, sell, kind, ally, in.Front[sell.Faction], maxSpend, o)
 				switch reason {
 				case "":
 					f.ShareOfGold = float64(f.BuyCost) / float64(o.Gold)
@@ -537,6 +583,8 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 					fn.SlowSales++
 				case "falling":
 					fn.Falling++
+				case "unproven":
+					fn.Unproven++
 				case "deposit":
 					fn.Deposit++
 				case "gap":
@@ -586,20 +634,42 @@ func nearSupply(s *FlipStat, price, skip int64) int64 {
 	return max(0, n-skip)
 }
 
-// fallingFloor: below high risk, a resale price under this share of the reference market value
-// means the market is sliding (a steady fall that day-level volatility doesn't catch), and the
-// stock could be worth less again by the time it sells.
-const fallingFloor = 0.85
+const (
+	// fallingFloor: a resale price under this share of the reference market value means the
+	// market is sliding, and the stock could be worth less again by the time it sells.
+	fallingFloor = 0.85
+	// fallingTrend: the asking price falling faster than this a day is a slide too.
+	fallingTrend = -0.10
+	// minProof: separate purchases at or above the resale price in the last 12 hours.
+	minProof = 2
+	// fallbackChance: per-visit sell chance when a house has no measurements at all.
+	fallbackChance = 0.3
+)
+
+// marketCeiling is the most a resale can ask: the market value, but never more than buyers
+// actually paid over the last day, and lower again if the price is sliding (projected to the
+// middle of the window).
+func marketCeiling(s *FlipStat, o FlipOptions) int64 {
+	c := s.Fair
+	if s.Clearing > 0 && (c == 0 || s.Clearing < c) {
+		c = s.Clearing
+	}
+	if s.Trend < 0 {
+		c = int64(float64(c) * math.Max(0.5, 1+s.Trend*o.p.WindowHours/24/2))
+	}
+	return c
+}
 
 // planOne decides one item on one route. reason is "" (a flip), "slow", "gap", "budget",
-// "falling" or "deposit".
-func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, maxSpend int64, o FlipOptions) (Flip, string) {
+// "falling", "unproven" or "deposit".
+func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally *FlipHouse, houseFront *FrontStat, maxSpend int64, o FlipOptions) (Flip, string) {
 	var rate float64 // units/day the resale market absorbs (floor)
 	var salesDay float64
 	var ceiling int64 // highest sensible resale price
 	var allyPrice int64
 	var refFair int64 // market value the resale is judged against for a slide
 	var why string
+	window := o.p.WindowHours / 24
 	switch kind {
 	case "alliance":
 		// Rule: the Alliance must buy it fast, and pay more at home than our Blackwater price.
@@ -610,9 +680,12 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		if a == nil || a.Sales < 5 || a.SalesPerDay < max(3, o.MinSales) || (s.Volatile && !o.Volatile) {
 			return Flip{}, "slow"
 		}
+		if !o.Volatile && a.Trend < fallingTrend {
+			return Flip{}, "falling"
+		}
 		allyPrice = a.Min
-		if a.Fair > 0 && (allyPrice == 0 || a.Fair < allyPrice) {
-			allyPrice = a.Fair
+		if c := marketCeiling(a, o); c > 0 && (allyPrice == 0 || c < allyPrice) {
+			allyPrice = c
 		}
 		if allyPrice == 0 {
 			return Flip{}, "gap"
@@ -626,7 +699,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		if s.Sales < 5 || s.SalesPerDay < o.MinSales || (s.Volatile && !o.Volatile) || s.Fair == 0 {
 			return Flip{}, "slow"
 		}
-		ceiling = s.Fair // never bet on the price going above market value
+		if !o.Volatile && s.Evidence && s.Trend < fallingTrend {
+			return Flip{}, "falling"
+		}
+		ceiling = marketCeiling(s, o) // never bet on the price going above what buyers pay
 		refFair = s.Fair
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
@@ -638,11 +714,6 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			ceiling = home - 1
 		}
 	}
-	// Everything near our price must clear within MaxClear: our units and the competition.
-	clearCap := int64(rate * o.MaxClear)
-	if clearCap < 1 {
-		return Flip{}, "slow"
-	}
 	relist := kind == "relist"
 	dep := float64(it.Deposit) // deposit per unit on the house we sell on
 	if sell.DepositMult > 0 {
@@ -651,16 +722,12 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 
 	// Resale price: the ceiling, or just under the cheapest competing listing. In the same house
 	// the competition is what's left after our own purchases, so iterate until stable.
-	sellAt := ceiling
-	if kind != "relist" && s.Min > 0 && s.Min-1 < sellAt {
-		sellAt = s.Min - 1
-	}
-	var units, cost, upTo, left, capUnits int64
+	var sellAt, units, cost, upTo, left, capUnits, clearCap int64
 	fill := func() {
 		net := float64(sellAt)*(1-sell.Cut) - dep
 		// A unit is worth buying only if it keeps the minimum return and its margin also covers
-		// the extra relist deposits, so a few dear units can't sink the whole flip.
-		maxBuy := int64(min(net/(1+o.MinROI), net-float64(o.Relists)*dep))
+		// one relist deposit, so a few dear units can't sink the whole flip.
+		maxBuy := int64(min(net/(1+o.MinROI), net-dep))
 		units, cost, upTo, left = 0, 0, 0, 0
 		if relist {
 			// What we buy here leaves the band and comes back into it at our price, so the
@@ -684,33 +751,64 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			left = l.Q - take
 		}
 	}
-	fill()
-	for iter := 0; iter < 4 && kind == "relist" && units > 0; iter++ {
-		next := int64(0)
-		if left > 0 {
-			next = upTo
-		} else {
-			var seen int64
-			for _, l := range b.Book {
-				seen += l.Q
-				if seen > units {
-					next = l.P
-					break
+	price := func() {
+		sellAt = ceiling
+		if kind != "relist" && s.Min > 0 && s.Min-1 < sellAt {
+			sellAt = s.Min - 1
+		}
+		fill()
+		for iter := 0; iter < 4 && kind == "relist" && units > 0; iter++ {
+			next := int64(0)
+			if left > 0 {
+				next = upTo
+			} else {
+				var seen int64
+				for _, l := range b.Book {
+					seen += l.Q
+					if seen > units {
+						next = l.P
+						break
+					}
+				}
+				if next == 0 {
+					next = b.Beyond // bought the whole cached book: the competition is past it
 				}
 			}
-			if next == 0 {
-				next = b.Beyond // bought the whole cached book: the competition is past it
+			want := ceiling
+			if next > 0 && next-1 < want {
+				want = next - 1
 			}
+			if want == sellAt {
+				break
+			}
+			sellAt = want
+			fill() // the purchase must match the price it's resold at
 		}
-		want := ceiling
-		if next > 0 && next-1 < want {
-			want = next - 1
+	}
+	// demand is units/day bought at or above p lately (the recent floor of what our listing
+	// would have caught), or the window's sales rate when there's no evidence.
+	demand := func(p int64) float64 {
+		if !s.Evidence || kind == "alliance" {
+			return rate
 		}
-		if want == sellAt {
-			break
+		u, _ := atOrAbove(s.Sold48, p)
+		return math.Min(rate, float64(u)/2)
+	}
+	// Everything near our price must clear within the window: our units and the competition.
+	clearCap = int64(rate * window)
+	if clearCap < 1 {
+		return Flip{}, "slow"
+	}
+	price()
+	if units > 0 && s.Evidence && kind != "alliance" {
+		// Size to the purchases that really happen at the resale price, not to all sales.
+		if c := int64(demand(sellAt) * window); c < clearCap {
+			clearCap = c
+			if clearCap < 1 {
+				return Flip{}, "unproven"
+			}
+			price()
 		}
-		sellAt = want
-		fill() // the purchase must match the price it's resold at
 	}
 	if (units == 0 && capUnits <= 0) || (relist && units > 0 && nearSupply(s, sellAt, 0) > clearCap) {
 		return Flip{}, "slow" // too much competing supply near the resale price
@@ -725,10 +823,19 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		switch {
 		case p > net/(1+o.MinROI):
 			return Flip{}, "gap"
-		case p > net-float64(o.Relists)*dep:
+		case p > net-dep:
 			return Flip{}, "deposit" // a margin, but not one that survives being undercut
 		}
 		return Flip{}, "budget"
+	}
+	// Proof: buyers paid at least our price lately (for Alliance flips, demand is the
+	// Alliance's at home, judged above).
+	var proof int64
+	if s.Evidence && kind != "alliance" {
+		_, proof = atOrAbove(s.Sold12, sellAt)
+		if proof < minProof {
+			return Flip{}, "unproven"
+		}
 	}
 	// Sold in one auction: the deposit has a 1s minimum per auction (seen in Journalator logs).
 	depositAtRisk := max(minDeposit, int64(math.Round(dep*float64(units))))
@@ -740,10 +847,6 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	if profit < o.MinProfit {
 		return Flip{}, "budget"
-	}
-	if profit-int64(o.Relists)*depositAtRisk < o.MinProfit {
-		// Undercut o.Relists more times, the deposits would eat the profit.
-		return Flip{}, "deposit"
 	}
 	if why == "" {
 		if kind == "relist" {
@@ -757,19 +860,31 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		skip = units
 	}
 	competing := nearSupply(s, sellAt, skip)
-	days := float64(units+competing) / rate
-	chance := sellChance(sell.Faction, days)
-	expected, rounds := expectedProfit(gross, cost, depositAtRisk, chance)
-	if expected < o.MinProfit {
-		return Flip{}, "deposit" // likely relists eat it: deposits and undercuts
+	days := float64(units+competing) / math.Max(demand(sellAt), 1e-9)
+	chance := frontChance(s, houseFront, o.p.CheckHours, sellChance(sell.Faction, days))
+	// Stock left at the end of the window goes at what buyers lately pay (or what it cost,
+	// when that's unknown), after the undercuts of every round.
+	rounds := o.p.rounds()
+	going := upTo
+	if s.Clearing > 0 {
+		going = s.Clearing
 	}
+	going = min(going, int64(float64(sellAt)*math.Pow(undercutRatio, float64(rounds))))
+	leftover := int64(math.Round(float64(going) * (1 - sell.Cut) * float64(units)))
+	expected, visits, soldOut := expectedProfit(gross, cost, depositAtRisk, chance, rounds, leftover)
+	if expected < o.MinProfit {
+		return Flip{}, "deposit" // likely relists, undercuts and leftover stock eat it
+	}
+	// Gold is tied up until the next visit after it sells, and no sooner than it can sell.
+	hold := math.Max(visits*o.p.CheckHours/24, days)
 	return Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
-		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Profit: profit, ROI: roi,
-		Expected: expected, SellChance: chance, GoneSoon: goneSoon(buy.Faction, b),
+		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, ListHours: int(o.p.ListHours), Profit: profit, ROI: roi,
+		Expected: expected, SellChance: chance, SoldOut: soldOut, GoneSoon: goneSoon(buy.Faction, b),
 		DepositAtRisk: depositAtRisk,
 		DaysToSell:    days, Competing: competing,
-		ProfitPerDay: int64(float64(expected) / math.Max(days*rounds, 1.0/24)),
-		SalesPerDay:  salesDay, AlliancePrice: allyPrice, Why: why}, ""
+		ProfitPerDay: int64(float64(expected) / math.Max(hold, 1.0/24)),
+		SalesPerDay:  salesDay, RecentAbove: proof, Clearing: s.Clearing, Trend: s.Trend,
+		AlliancePrice: allyPrice, Why: why}, ""
 }
 
 // blackwaterHomeCap is the most a Blackwater buyer would pay: the higher of the Horde and
@@ -797,3 +912,12 @@ func title(s string) string {
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
 }
+
+// StyleTiming is a style's visit interval and window in hours, and its listing rounds.
+func StyleTiming(s Style) (checkHours, windowHours float64, rounds int) {
+	p := styleProfiles[ParseStyle(string(s))]
+	return p.CheckHours, p.WindowHours, p.rounds()
+}
+
+// Styles lists the trading styles, most attentive first.
+var Styles = []Style{StyleActive, StyleRegular, StyleAway}

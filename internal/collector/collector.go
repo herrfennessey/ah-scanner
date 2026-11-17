@@ -157,6 +157,23 @@ func (c *Collector) Setup(ctx context.Context) error {
 			}
 		}
 	}
+	// Auctions recorded before auction.front existed: mark the last few days, which the flip
+	// planner's sell rates read. Once, like the backfill above.
+	const frontKey = "backfill.auction.front"
+	if done, err := c.Store.Meta(ctx, frontKey); err != nil {
+		return err
+	} else if done == "" {
+		start := time.Now()
+		n, err := c.Store.BackfillFront(ctx, start.AddDate(0, 0, -5).Unix())
+		if err != nil {
+			c.Log.Error("backfill front", "err", err)
+		} else {
+			c.Log.Info("backfilled cheapest-when-posted", "auctions", n, "took", time.Since(start).Round(time.Second))
+			if err := c.Store.SetMeta(ctx, frontKey, start.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
