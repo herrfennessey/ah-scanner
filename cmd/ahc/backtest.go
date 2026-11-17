@@ -39,16 +39,16 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 		}
 	}
 	trades, err := backtest.Run(ctx, st, backtest.Options{From: now.AddDate(0, 0, -f.days), To: now,
-		Every: f.every, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate})
+		Every: f.every, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate, QueueScale: f.queue})
 	if err != nil {
 		return err
 	}
 	if f.csv {
 		w := csv.NewWriter(os.Stdout)
-		w.Write([]string{"at", "style", "item", "kind", "buy_house", "sell_house", "units", "cost", "sell_at", "expected", "sold", "cash", "marked", "floor", "hours", "relists"})
+		w.Write([]string{"at", "style", "play", "item", "kind", "buy_house", "sell_house", "units", "cost", "sell_at", "expected", "sold", "cash", "marked", "floor", "hours", "relists"})
 		for _, t := range trades {
 			x := t.Flip
-			w.Write([]string{time.Unix(t.At, 0).UTC().Format(time.RFC3339), string(t.Style), x.Name, x.Kind, x.BuyHouse, x.SellHouse,
+			w.Write([]string{time.Unix(t.At, 0).UTC().Format(time.RFC3339), string(t.Style), string(x.Play), x.Name, x.Kind, x.BuyHouse, x.SellHouse,
 				fmt.Sprint(x.BuyUnits), fmt.Sprint(x.BuyCost), fmt.Sprint(x.SellAt), fmt.Sprint(x.Expected),
 				fmt.Sprint(t.Sold), fmt.Sprint(t.Cash), fmt.Sprint(t.Marked), fmt.Sprint(t.Floor), fmt.Sprintf("%.1f", t.Hours), fmt.Sprint(t.Relists)})
 		}
@@ -56,9 +56,13 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 		return w.Error()
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintf(tw, "style\ttrades\tcost\tpromised\tcash\tmarked\tunits sold\tsold out\tlosing\tmedian h\t\n")
+	fmt.Fprintf(tw, "style\tplay\ttrades\tcost\tpromised\tcash\tmarked\tunits sold\tsold out\tlosing\tmedian h\t\n")
 	for _, s := range backtest.Summarize(trades) {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.1f\t\n", s.Style, s.Trades, report.Gold(s.Cost), report.Gold(s.Expected),
+		play := string(s.Play)
+		if play == "" {
+			play = "all"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.1f\t\n", s.Style, play, s.Trades, report.Gold(s.Cost), report.Gold(s.Expected),
 			report.Gold(s.Cash), report.Gold(s.Marked), 100*s.UnitsSold, 100*s.AllSold, 100*s.Losing, s.MedianHold)
 	}
 	tw.Flush()

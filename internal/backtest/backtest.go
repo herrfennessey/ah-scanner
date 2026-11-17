@@ -5,9 +5,11 @@
 // rebuilds them). A flip's resale listing is then filled only by buyers who really paid at
 // least its price after it was posted: a buyer who paid more would have taken the cheaper
 // listing first. Listings that undercut it in the meantime are in the history too, so the
-// buyers they took aren't counted. At each of the style's visits, unsold stock is relisted
-// (one more deposit) just under the cheapest other listing, never below what it cost; whatever
-// hasn't sold by the end of the window is valued at the cheapest price listed then.
+// buyers they took aren't counted. Each flip is played as planned: a hold is left alone; a
+// check-in relists at a visit when the queue cheaper than it is longer than buyers would get
+// through before it runs out; a camp relists whenever undercut. A relist (one more deposit) goes
+// just under the cheapest other listing, never below what it cost. Whatever hasn't sold by the
+// end of the window is valued at the cheapest price listed then.
 package backtest
 
 import (
@@ -32,6 +34,8 @@ type Options struct {
 	DepositRate float64
 	// Houses as the collector resolved them; default the ones in the stored flip cache.
 	Houses []report.FlipHouse
+	// QueueScale scales the check-in relist rule's queue (default 1): under 1 relists sooner.
+	QueueScale float64
 }
 
 // Trade is one flip the planner proposed and what came of it.
@@ -44,13 +48,15 @@ type Trade struct {
 	Marked  int64        `json:"marked"`  // Cash plus the unsold stock at the cheapest price at the end of the window
 	Floor   int64        `json:"floor"`   // the cheapest other listing then (0: none, valued at the last price)
 	Hours   float64      `json:"hours"`   // until the last unit sold (the window if not all did)
-	Relists int          `json:"relists"` // visits at which it was undercut and relisted
+	Relists int          `json:"relists"` // visits at which it was relisted
 	cut     float64
+	queue   float64
 }
 
 // Summary totals one style.
 type Summary struct {
 	Style      report.Style `json:"style"`
+	Play       report.Play  `json:"play"` // "" totals every play of the style
 	Trades     int          `json:"trades"`
 	Cost       int64        `json:"cost"`
 	Expected   int64        `json:"expected"`   // what the planner promised
@@ -83,9 +89,12 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 	} else if !last.Valid {
 		return nil, fmt.Errorf("no scans")
 	}
+	if o.QueueScale <= 0 {
+		o.QueueScale = 1
+	}
 	longest := 0.0
-	for _, s := range o.Styles {
-		_, w, _, _ := report.StyleTiming(s)
+	for _, p := range report.Plays {
+		_, w, _, _, _ := report.PlayTiming(p)
 		longest = max(longest, w)
 	}
 	to := min(o.To.Unix(), last.Int64-int64(longest*3600))
@@ -124,8 +133,8 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 				if !c.take(in, f, t) {
 					continue // another route at this time already bought those listings
 				}
-				tr := Trade{At: t, Style: r, Flip: f, cut: cut[f.SellHouse]}
-				if err := fill(ctx, st.DB, ids[f.SellHouse], t, r, &tr); err != nil {
+				tr := Trade{At: t, Style: r, Flip: f, cut: cut[f.SellHouse], queue: o.QueueScale}
+				if err := fill(ctx, st.DB, ids[f.SellHouse], t, &tr); err != nil {
 					return nil, err
 				}
 				busy[key] = t + int64(tr.Hours*3600)
@@ -302,45 +311,69 @@ func planTimes(ctx context.Context, db *sql.DB, from, to, every int64) ([]int64,
 	return out, rows.Err()
 }
 
-// fill plays the resale listing against the purchases made after it was posted. At each of the
-// style's visits, stock still unsold is relisted (losing the deposit) if it was undercut or its
-// listing ran out; between a listing running out and the next visit, nothing of ours is up.
-func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, tr *Trade) error {
+// fill plays the resale listing against the purchases made after it was posted, by the flip's
+// play. Between a listing running out and the next visit, nothing of ours is up.
+func fill(ctx context.Context, db *sql.DB, house, t int64, tr *Trade) error {
 	f := tr.Flip
-	checkH, windowH, listH, rounds := report.StyleTiming(style)
+	checkH, windowH, listH, rounds, relists := report.PlayTiming(f.Play)
+	if tr.queue <= 0 {
+		tr.queue = 1
+	}
 	end := t + int64(windowH*3600)
-	type sale struct{ ts, units, price int64 }
-	rows, err := db.QueryContext(ctx, `SELECT closed_at, qty_last, unit_price FROM auction
+	type sale struct {
+		ts, units, price int64
+		kind             string
+		id               int64
+	}
+	rows, err := db.QueryContext(ctx, `SELECT closed_at, qty_last, unit_price, kind, auction_id, 0 FROM auction
 			WHERE house_id=? AND item_id=? AND variant=? AND closed_at>? AND closed_at<=? AND outcome='sold'
 		UNION ALL
-		SELECT ts, units, unit_price FROM sale_event WHERE house_id=? AND item_id=? AND variant=? AND ts>? AND ts<=? AND outcome='partial'
+		SELECT ts, units, unit_price, kind, auction_id, 1 FROM sale_event WHERE house_id=? AND item_id=? AND variant=? AND ts>? AND ts<=? AND outcome='partial'
 		ORDER BY 1`, house, f.ItemID, f.Variant, t, end, house, f.ItemID, f.Variant, t, end)
 	if err != nil {
 		return err
 	}
 	var sales []sale
+	partials := map[[2]any][]sale{} // by auction: what open listings still had, for the queue
 	for rows.Next() {
 		var x sale
-		if err := rows.Scan(&x.ts, &x.units, &x.price); err != nil {
+		var partial bool
+		if err := rows.Scan(&x.ts, &x.units, &x.price, &x.kind, &x.id, &partial); err != nil {
 			rows.Close()
 			return err
 		}
 		sales = append(sales, x)
+		if partial {
+			k := [2]any{x.kind, x.id}
+			partials[k] = append(partials[k], x)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// The listings the flip bought are still in the history (nobody really bought them): for a
+	// relist in the same house, leave out what was open at t up to the buy price, or they'd look
+	// like undercuts.
+	notBought := ""
+	args := func(at int64, extra ...any) []any {
+		a := append([]any{house, f.ItemID, f.Variant}, extra...)
+		a = append(a, at, at)
+		if f.Kind == "relist" {
+			a = append(a, t, f.BuyUpTo, t)
+		}
+		return a
+	}
+	if f.Kind == "relist" {
+		notBought = ` AND NOT (first_seen<=? AND unit_price<=? AND (closed_at IS NULL OR closed_at>?))`
+	}
 	floorAt := func(at int64) (int64, error) {
 		var p sql.NullInt64
 		var err error
 		if f.Kind == "relist" {
-			// The listings the flip bought are still in the history (nobody really bought them):
-			// leave out what was open at t up to the buy price, or they'd look like undercuts.
 			err = db.QueryRowContext(ctx, `SELECT MIN(unit_price) FROM auction
-				WHERE house_id=? AND item_id=? AND variant=? AND unit_price>0 AND first_seen<=? AND (closed_at IS NULL OR closed_at>?)
-					AND NOT (first_seen<=? AND unit_price<=? AND (closed_at IS NULL OR closed_at>?))`,
-				house, f.ItemID, f.Variant, at, at, t, f.BuyUpTo, t).Scan(&p)
+				WHERE house_id=? AND item_id=? AND variant=? AND unit_price>0 AND first_seen<=? AND (closed_at IS NULL OR closed_at>?)`+notBought,
+				args(at)...).Scan(&p)
 		} else {
 			err = db.QueryRowContext(ctx, `SELECT i.min_unit FROM item_snapshot i JOIN snapshot s ON s.id=i.snapshot_id
 				WHERE s.house_id=? AND i.item_id=? AND i.variant=? AND s.fetched_at<=? ORDER BY s.fetched_at DESC LIMIT 1`,
@@ -350,6 +383,32 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 			return 0, err
 		}
 		return p.Int64, nil
+	}
+	// aheadAt is the units listed cheaper than price at a visit: what open listings had left
+	// then (their last count, plus what was bought from them later).
+	aheadAt := func(at, price int64) (int64, error) {
+		rows, err := db.QueryContext(ctx, `SELECT kind, auction_id, qty_last FROM auction
+			WHERE house_id=? AND item_id=? AND variant=? AND unit_price>0 AND unit_price<? AND first_seen<=? AND (closed_at IS NULL OR closed_at>?)`+notBought,
+			args(at, price)...)
+		if err != nil {
+			return 0, err
+		}
+		defer rows.Close()
+		var n int64
+		for rows.Next() {
+			var kind string
+			var id, q int64
+			if err := rows.Scan(&kind, &id, &q); err != nil {
+				return 0, err
+			}
+			for _, p := range partials[[2]any{kind, id}] {
+				if p.ts > at {
+					q += p.units
+				}
+			}
+			n += q
+		}
+		return n, rows.Err()
 	}
 	price, gross, lost := f.SellAt, 0.0, 0.0
 	depositShare := func() float64 { return float64(f.DepositAtRisk) * float64(f.BuyUnits-tr.Sold) / float64(f.BuyUnits) }
@@ -372,22 +431,34 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 				lastTS = sales[i].ts
 			}
 		}
-		if tr.Sold < f.BuyUnits && k < rounds-1 {
-			// The visit: undercut? Cancel (losing the deposit) and relist under the cheapest,
-			// but never below what the units cost.
-			fl, err := floorAt(roundEnd)
+		if !relists || tr.Sold >= f.BuyUnits || k == rounds-1 {
+			continue
+		}
+		// The visit.
+		fl, err := floorAt(roundEnd)
+		if err != nil {
+			return err
+		}
+		undercut := fl > 0 && fl <= price
+		lapsed := roundEnd >= listed+life
+		move := undercut
+		if undercut && f.Play == report.PlayCheckIn && !lapsed {
+			// Only when buyers wouldn't get through the cheaper queue and ours before it runs out.
+			ahead, err := aheadAt(roundEnd, price)
 			if err != nil {
 				return err
 			}
-			undercut := fl > 0 && fl <= price
-			if undercut || roundEnd >= listed+life {
-				lost += depositShare()
-				if undercut {
-					price = max(fl-1, f.BuyUpTo)
-				}
-				listed = roundEnd
-				tr.Relists++
+			left := float64(listed+life-roundEnd) / 3600
+			limit := tr.queue * float64(report.RelistQueue(f.Demand, left, f.BuyUnits-tr.Sold))
+			move = float64(ahead) > limit
+		}
+		if move || lapsed {
+			lost += depositShare()
+			if undercut {
+				price = max(fl-1, f.BuyUpTo)
 			}
+			listed = roundEnd
+			tr.Relists++
 		}
 	}
 	tr.Hours = float64(lastTS-t) / 3600
@@ -414,32 +485,64 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 
 // Summarize totals the trades per trading style.
 func Summarize(trades []Trade) []Summary {
-	by := map[report.Style]*Summary{}
-	units := map[report.Style][2]int64{}
-	hours := map[report.Style][]float64{}
-	var order []report.Style
-	for _, tr := range trades {
-		s := by[tr.Style]
+	type key struct {
+		s report.Style
+		p report.Play
+	}
+	by := map[key]*Summary{}
+	units := map[key][2]int64{}
+	hours := map[key][]float64{}
+	var order []key
+	add := func(r key, tr Trade) {
+		s := by[r]
 		if s == nil {
-			s = &Summary{Style: tr.Style}
-			by[tr.Style] = s
-			order = append(order, tr.Style)
+			s = &Summary{Style: r.s, Play: r.p}
+			by[r] = s
+			order = append(order, r)
 		}
 		s.Trades++
 		s.Cost += tr.Flip.BuyCost
 		s.Expected += tr.Flip.Expected
 		s.Cash += tr.Cash
 		s.Marked += tr.Marked
-		u := units[tr.Style]
-		units[tr.Style] = [2]int64{u[0] + tr.Sold, u[1] + tr.Flip.BuyUnits}
+		u := units[r]
+		units[r] = [2]int64{u[0] + tr.Sold, u[1] + tr.Flip.BuyUnits}
 		if tr.Sold == tr.Flip.BuyUnits {
 			s.AllSold++
 		}
 		if tr.Marked < 0 {
 			s.Losing++
 		}
-		hours[tr.Style] = append(hours[tr.Style], tr.Hours)
+		hours[r] = append(hours[r], tr.Hours)
 	}
+	for _, tr := range trades {
+		add(key{tr.Style, ""}, tr)
+		add(key{tr.Style, tr.Flip.Play}, tr)
+	}
+	// Each style's total, then its plays, least attentive first.
+	rank := func(k key) (int, int) {
+		si, pi := len(report.Styles), 0
+		for i, x := range report.Styles {
+			if x == k.s {
+				si = i
+			}
+		}
+		for i, x := range report.Plays {
+			if x == k.p {
+				pi = i + 1
+			}
+		}
+		return si, pi
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		as, ap := rank(a)
+		bs, bp := rank(b)
+		if as != bs {
+			return as < bs
+		}
+		return ap < bp
+	})
 	var out []Summary
 	for _, r := range order {
 		s := by[r]

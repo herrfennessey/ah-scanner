@@ -2,22 +2,33 @@
 
 A private price and sell-through history for the WoW Forever **EU PvP Horde and Blackwater**
 auction houses, built from Blizzard's API. The web UI opens on **Flips**: small trades sized
-to the gold you have (a slider, default 40g) and how you trade (regular by default):
+to the gold you have (a slider, default 40g) and how you trade (casual by default):
 
 - **Relist:** listings dumped well under the next price in a house; buy them, relist just under.
 - **Cross:** cheaper on Blackwater than it reliably sells for on Horde.
 - **Alliance:** cheaper on Horde than Alliance players pay at home, for items the Alliance buys
   several times a day; sold to them on Blackwater.
 
-How you trade is how often you come back to relist what was undercut, and so how long a flip
-has to work without you. Your units plus everything others list within 10% of your price must
-sell out within the window, at the rate buyers lately paid your price or more:
+How you trade is how often you can come back, and decides which **plays** you're offered. Each
+flip names its play:
 
-| Style | Visits | Listing | Window | Gold per flip | Min return | Swinging or sliding prices | Sells on |
-|-------|--------|---------|--------|---------------|------------|----------------------------|----------|
-| active | about hourly | 8h | 12 h | 50% | 15% | yes, priced where the slide will be | Horde, Blackwater |
-| regular (default) | every ~5 h | 8h | 1 day | 40% | 20% | no | Horde, Blackwater |
-| away | once, ~12 h later | 24h | 12 h | 30% | 25% | no | Horde only |
+| Play | What you do | Listing | Window | Offered to |
+|------|-------------|---------|--------|------------|
+| **hold** | post and leave it, even when undercut: the commodity AH sells the cheaper listings first, then yours | 24h | 1 day | everyone |
+| **check in** | look every ~5 h; relist just under the cheapest only if more units are listed cheaper than yours than buyers will take before your listing runs out (the flip gives that queue for your first visit) | 24h | 1 day | casual, active |
+| **camp** | check hourly and relist whenever undercut; the only play for swinging or sliding prices (priced where the slide will be) | 8h | 12 h | active |
+
+Each item is planned with every play the style allows, and the one with the most expected
+profit is kept, so active always sees at least what casual does, and casual what away does
+(a test checks it over random markets). Your units plus everything others list within 10% of
+your price must sell out within the play's window, at the rate buyers lately paid your price or
+more.
+
+| Style | Visits | Plays | Gold per flip | Min return | Sells on |
+|-------|--------|-------|---------------|------------|----------|
+| active | about hourly | hold, check in, camp | 50% | 15% | Horde, Blackwater |
+| casual (default) | 4–5 times a day | hold, check in | 40% | 20% | Horde, Blackwater |
+| away | once or twice a day | hold | 30% | 25% | Horde only |
 
 Every flip is judged on what buyers do, not what sellers ask:
 
@@ -26,14 +37,16 @@ Every flip is judged on what buyers do, not what sellers ask:
 - At least **2 purchases at or above the resale price** in the last 12 hours, and the amount
   bought must fit the purchases at or above that price over the last 2 days.
 - **Sliding markets:** an asking price falling over 10% a day (the median ask, by Theil-Sen, so
-  one dump can't trigger it) is left to active traders; a resale more than 15% under market
-  value counts as a slide too.
+  one dump can't trigger it) is left to camping; a resale more than 15% under market value
+  counts as a slide too.
 - **Sell chance** is per item: the share of its listings that were the cheapest when posted
-  (`auction.front`) and sold before the next visit, blended with the house average when the
-  item has few. Busy markets full of undercutters score low even if they sell a lot.
+  (`auction.front`) and sold within one round of the play (a hold's 24 hours, or until the next
+  visit), blended with the house average when the item has few. **Undercut chance** is measured
+  the same way: how often a cheaper listing turned up within the round while it was still up.
 
-**Expected profit** weighs the style's visits: each listing round sells with that chance; one
-that doesn't loses the deposit and relists one typical undercut (about 3%) lower. Stock still
+**Expected profit** weighs the play's rounds: each sells with that chance. Looking is free: a
+round that doesn't sell costs a relist (the deposit, and one typical undercut of about 3%) only
+when it was undercut, or the deposit when the listing ran out; holds never relist. Stock still
 unsold at the end of the window is valued at the price buyers are paying then, not assumed sold.
 Deposits are 20% of the vendor price with a 1s minimum per auction (confirmed against
 Journalator posting logs), 5× on Blackwater (`deposit_factor`); how the deposit grows with
@@ -52,9 +65,11 @@ your gold is tied up. On Blackwater, resale is never above the dearer of the Hor
 prices (every Blackwater buyer can buy at home instead).
 
 `ahc backtest -days 4` replays the planner at every past scan, with the inputs as they were then,
-and scores each flip per style: the resale fills only from buyers who really paid at least its
-price afterwards, unsold stock is relisted under the cheapest listing at each visit (never under
-cost) and valued at the floor when the window ends. `-csv` lists every trade.
+and scores each flip per style and play: the resale fills only from buyers who really paid at
+least its price afterwards, and is played as planned (a hold left alone; a check-in relisted under
+the cheapest when the recorded queue cheaper than it is too long; a camp relisted whenever
+undercut; never under cost). Unsold stock is valued at the floor when the window ends. `-queue 0.5`
+or `-queue 2` scales the check-in queue to test the rule. `-csv` lists every trade.
 
 Each item page has a **price distribution**: units listed at each price above the axis, units
 bought over the last 48 hours below it, market value and the median paid marked, and the cost of

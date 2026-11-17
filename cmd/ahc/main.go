@@ -42,7 +42,8 @@ Reports (common flags: -house horde|blackwater, -days N, -min-sold N, -csv, -lim
   ahc deals              what is listed below its fair price right now
   ahc item <item>        daily history of one item
   ahc backtest           replay the flip planner over the last -days (default 3) and score each
-                         flip by what sold afterwards, per trading style (-gold G, -every 1h, -csv)
+                         flip by what sold afterwards, per trading style and play (-gold G,
+                         -every 1h, -queue 1, -csv)
 
 <item> is an item ID or (part of) its name. Config: -config path (default $AHC_CONFIG or /config.yaml).
 `
@@ -74,6 +75,7 @@ type flags struct {
 	out                    string
 	gold                   float64
 	every                  time.Duration
+	queue                  float64
 }
 
 func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*flags, []string, error) {
@@ -95,6 +97,7 @@ func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*fl
 	f.fs.StringVar(&f.out, "out", "", "replay: path of the database to build")
 	f.fs.Float64Var(&f.gold, "gold", 40, "backtest: the player's gold")
 	f.fs.DurationVar(&f.every, "every", time.Hour, "backtest: plan at most once per this")
+	f.fs.Float64Var(&f.queue, "queue", 1, "backtest: scale the check-in relist queue (under 1 relists sooner)")
 	// Allow flags after positional args: ahc sell "Heavy Quiver" -house blackwater
 	var pos []string
 	rest := args

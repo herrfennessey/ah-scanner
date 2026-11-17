@@ -69,22 +69,27 @@ func goneSoon(house string, b *FlipStat) float64 {
 	return 0 // not underpriced enough to be in the measurements
 }
 
-// expectedProfit weighs the listing rounds of a style: each sells with chance p; a round that
-// doesn't loses the deposit and relists one typical undercut lower. Stock still unsold after
-// the last round is worth leftover (its value at the going price), one more deposit lost.
-// Returns the expected profit, the expected number of rounds held (for the holding time) and
-// the chance it all sells within the rounds.
-func expectedProfit(gross, cost, deposit int64, p float64, rounds int, leftover int64) (int64, float64, float64) {
+// expectedProfit weighs the listing rounds of a play: each sells with chance p. A round that
+// doesn't is undercut with chance under (the stock is relisted one typical undercut lower,
+// losing the deposit), or else its listing runs out with chance expire (relisted at the same
+// price, losing the deposit). Stock still unsold after the last round is worth leftover (its
+// value at the going price), one more deposit lost. Returns the expected profit, the expected
+// number of rounds held (for the holding time) and the chance it all sells within the rounds.
+func expectedProfit(gross, cost, deposit int64, p, under, expire float64, rounds int, leftover int64) (int64, float64, float64) {
 	var ev, held, reach float64 = 0, 0, 1 // reach: chance of getting to this round unsold
-	price := 1.0
+	price, lost := 1.0, 0.0               // expected price multiplier and deposits lost so far, given unsold
+	relist := under + (1-under)*expire
 	for k := 0; k < rounds; k++ {
 		sell := reach * p
-		ev += sell * (float64(gross)*price - float64(cost) - float64(deposit)*float64(k))
+		ev += sell * (float64(gross)*price - float64(cost) - float64(deposit)*lost)
 		held += sell * float64(k+1)
 		reach -= sell
-		price *= undercutRatio
+		if k < rounds-1 {
+			price *= 1 - under*(1-undercutRatio)
+			lost += relist
+		}
 	}
-	ev += reach * (float64(leftover) - float64(cost) - float64(deposit)*float64(rounds))
+	ev += reach * (float64(leftover) - float64(cost) - float64(deposit)*(lost+1))
 	held += reach * float64(rounds)
 	return int64(math.Round(ev)), held, 1 - reach
 }
