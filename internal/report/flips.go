@@ -1004,8 +1004,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	}
 	rounds := o.p.rounds()
 	// A round that doesn't sell costs a relist when the listing was undercut, or ran out.
+	// A listing that outlasts the window (a check-in's 24h) never runs out before the last visit.
 	expire := math.Min(1, o.p.CheckHours/o.p.ListHours)
-	if !o.p.Relists {
+	if !o.p.Relists || o.p.ListHours >= o.p.WindowHours {
 		expire = 0
 	}
 	// Stock left at the end of the window goes at what buyers lately pay (or what it cost,
