@@ -72,7 +72,7 @@ func TestCheckInRelistsOnlyBehindALongQueue(t *testing.T) {
 	st, t0 := scenario(t)
 	// At 12s, behind the 10s wall: at the 5h visit 90 units are cheaper than ours.
 	flip := report.Flip{ItemID: 7, BuyUnits: 20, BuyUpTo: 500, BuyCost: 10000, SellAt: 1200, DepositAtRisk: 100, Play: report.PlayCheckIn}
-	// Buyers take 48 a day: in the 19 hours left they'd get through 38, not 90 and our 20.
+	// Buyers take 48 a day: in the 19 hours left they'd get through 38 of the 90 ahead of ours.
 	// Relist under the wall, and it sells.
 	tr := Trade{Flip: flip, cut: 0.05}
 	tr.Flip.Demand = 48

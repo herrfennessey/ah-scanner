@@ -1039,17 +1039,17 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		f.CheckHours = int(o.p.CheckHours)
 	}
 	if o.play == PlayCheckIn {
-		f.RelistQueue = RelistQueue(rate, o.p.ListHours-o.p.CheckHours, units)
+		f.RelistQueue = RelistQueue(rate, o.p.ListHours-o.p.CheckHours)
 	}
 	return f, ""
 }
 
 // RelistQueue is the check-in rule: with hoursLeft on the listing, relist when more units than
-// this are listed cheaper than your unsold ones. Buyers take the cheapest first at perDay units
-// a day, so beyond it they wouldn't reach yours before the listing runs out. 0: relist whenever
+// this are listed cheaper than yours. Buyers take the cheapest first at perDay units a day, so
+// beyond it they wouldn't reach your first unit before the listing runs out. 0: relist whenever
 // undercut.
-func RelistQueue(perDay, hoursLeft float64, unsold int64) int64 {
-	return max(0, int64(math.Floor(perDay*hoursLeft/24))-unsold)
+func RelistQueue(perDay, hoursLeft float64) int64 {
+	return max(0, int64(math.Floor(perDay*hoursLeft/24)))
 }
 
 // blackwaterHomeCap is the most a Blackwater buyer would pay: the higher of the Horde and

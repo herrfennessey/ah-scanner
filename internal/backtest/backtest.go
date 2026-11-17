@@ -435,7 +435,7 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, tr *Trade) error {
 				return err
 			}
 			left := float64(listed+life-roundEnd) / 3600
-			limit := tr.queue * float64(report.RelistQueue(f.Demand, left, f.BuyUnits-tr.Sold))
+			limit := tr.queue * float64(report.RelistQueue(f.Demand, left))
 			move = float64(ahead) > limit
 		}
 		if move || lapsed {

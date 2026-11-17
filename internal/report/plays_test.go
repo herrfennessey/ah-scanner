@@ -95,12 +95,16 @@ func TestEachStyleGetsItsPlays(t *testing.T) {
 }
 
 func TestRelistQueue(t *testing.T) {
-	// 48 a day, 19 hours left: buyers get through 38 units; with our 20 unsold, relist once more
-	// than 18 are cheaper.
-	if q := RelistQueue(48, 19, 20); q != 18 {
+	// 48 a day, 19 hours left: buyers get through 38 units, so relist once more than 38 are
+	// cheaper than yours, however big your own stack.
+	if q := RelistQueue(48, 19); q != 38 {
 		t.Fatalf("%d", q)
 	}
-	if q := RelistQueue(10, 5, 20); q != 0 {
+	// Hot Lion Chops on Neutral: 133 a day, 19 hours left.
+	if q := RelistQueue(133, 19); q != 105 {
+		t.Fatalf("%d", q)
+	}
+	if q := RelistQueue(1, 5); q != 0 {
 		t.Fatalf("%d", q)
 	}
 }
