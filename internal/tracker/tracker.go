@@ -8,7 +8,7 @@ import "github.com/herrfennessey/ah-scanner/internal/listing"
 const (
 	Sold          = "sold"            // rule 5: vanished with time to spare and no cancel signal
 	Partial       = "partial"         // rule 1: commodity quantity dropped on the same auction
-	Cancelled     = "cancelled"       // rule 4a: vanished with time to spare, reposted cheaper (probably not sold)
+	Cancelled     = "cancelled"       // rule 4a: vanished with time to spare, reposted cheaper (probably not sold); rule 4c for gear
 	ExpiredOrSold = "expired_or_sold" // rule 3: vanished when it could have expired
 	// Unsold: a commodity that vanished while cheaper units of the same item, listed before it,
 	// stayed untouched. The commodity AH fills buys cheapest-first, so nobody bought it: it was
@@ -129,6 +129,14 @@ func classifyVanished(kind listing.Kind, o Open, now int64, newMin map[repostKey
 	// Rule 4a: reposted cheaper — a new auction of the same item and quantity at a lower price.
 	if p, ok := newMin[repostKey{o.ItemID, o.Variant, o.Qty}]; ok && o.UnitPrice > 0 && p < o.UnitPrice {
 		return Cancelled
+	}
+	// Rule 4c: gear that vanished while a cheaper copy, listed before, is still there. Buyers
+	// take the cheapest copy, so it was most likely cancelled (on a busy house, often to be
+	// reposted from another character); ambiguous, not a certain sale.
+	if kind == listing.Gear && o.UnitPrice > 0 {
+		if p, ok := untouchedMin[itemKey{o.ItemID, o.Variant}]; ok && p < o.UnitPrice {
+			return Cancelled
+		}
 	}
 	return Sold
 }

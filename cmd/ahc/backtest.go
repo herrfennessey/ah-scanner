@@ -12,11 +12,24 @@ import (
 	"github.com/herrfennessey/ah-scanner/internal/backtest"
 	"github.com/herrfennessey/ah-scanner/internal/config"
 	"github.com/herrfennessey/ah-scanner/internal/report"
+	"github.com/herrfennessey/ah-scanner/internal/rollup"
 	"github.com/herrfennessey/ah-scanner/internal/store"
 )
 
 func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *flags) error {
 	now := time.Now()
+	// And gear "sales" from before tracker rule 4c (a cheaper copy outlasted it): reclassify the
+	// window and roll its days up again, as the collector does once at startup.
+	from := now.AddDate(0, 0, -f.days-1)
+	fromDay, _, _ := rollup.DayBounds(rollup.DayString(from, rollup.Berlin), rollup.Berlin)
+	if n, err := st.ReclassifyGearSales(ctx, fromDay); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "ahc: %d gear sales were cancels by rule 4c; rolling up again\n", n)
+		if _, err := rollup.Range(ctx, st.DB, from, now, rollup.Options{AmbiguousWeight: cfg.AmbiguousWeight}); err != nil {
+			return err
+		}
+	}
 	trades, err := backtest.Run(ctx, st, backtest.Options{From: now.AddDate(0, 0, -f.days), To: now,
 		Hold: f.hold, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate})
 	if err != nil {

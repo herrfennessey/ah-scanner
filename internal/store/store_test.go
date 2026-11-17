@@ -234,3 +234,26 @@ func TestMissingTooltips(t *testing.T) {
 		t.Fatalf("%v %v", got, err)
 	}
 }
+
+func TestReclassifyGearSales(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	// 1: sold while the cheaper 2, up since before, stayed: a cancel. 3: sold as the cheapest.
+	// 4: sold before the window: untouched.
+	st.DB.Exec(`INSERT INTO auction (house_id, kind, auction_id, item_id, variant, unit_price, first_seen, last_seen, closed_at, outcome) VALUES
+		(1,'gear',1,9,'',300,?,?,?, 'sold'), (1,'gear',2,9,'',250,?,?,NULL,NULL), (1,'gear',3,9,'',200,?,?,?,'sold'),
+		(1,'gear',4,9,'',400,?,?,?,'sold')`,
+		now-7200, now-3600, now, now-7200, now, now-7200, now-3600, now-1800, now-30*86400, now-30*86400, now-29*86400)
+	n, err := st.ReclassifyGearSales(ctx, now-86400)
+	if err != nil || n != 1 {
+		t.Fatalf("changed %d (%v)", n, err)
+	}
+	for id, want := range map[int64]string{1: "cancelled", 3: "sold", 4: "sold"} {
+		var got string
+		st.DB.QueryRow(`SELECT outcome FROM auction WHERE auction_id=?`, id).Scan(&got)
+		if got != want {
+			t.Fatalf("auction %d: %s, want %s", id, got, want)
+		}
+	}
+}

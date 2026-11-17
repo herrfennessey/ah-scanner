@@ -569,6 +569,102 @@ func (s *Store) PublishTimes(ctx context.Context, since int64) (map[string][]int
 	return out, rows.Err()
 }
 
+// ReclassifyGearSales applies the tracker's rule 4c to gear recorded as sold since the given
+// time, before the rule existed: a copy that vanished while a cheaper one, listed before it, was
+// still there afterwards becomes cancelled. Returns how many changed; the daily rows of those
+// days need rolling up again.
+func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, error) {
+	houses, err := s.DB.QueryContext(ctx, `SELECT DISTINCT house_id FROM auction WHERE kind='gear'`)
+	if err != nil {
+		return 0, err
+	}
+	var hs []int64
+	for houses.Next() {
+		var h int64
+		if err := houses.Scan(&h); err != nil {
+			houses.Close()
+			return 0, err
+		}
+		hs = append(hs, h)
+	}
+	houses.Close()
+	if err := houses.Err(); err != nil {
+		return 0, err
+	}
+	type auc struct {
+		id, price, first, last, closed int64 // closed 0: still open
+		sold                           bool
+	}
+	var n int64
+	for _, h := range hs {
+		// Everything that could have been up next to a sale since then: listings last longer
+		// than 2 days in no game version.
+		rows, err := s.DB.QueryContext(ctx, `SELECT auction_id, item_id, variant, unit_price, first_seen, last_seen, COALESCE(closed_at, 0), outcome='sold'
+			FROM auction WHERE house_id=? AND kind='gear' AND unit_price>0 AND (closed_at IS NULL OR closed_at>=?)`, h, since-2*86400)
+		if err != nil {
+			return n, err
+		}
+		groups := map[[2]any][]auc{}
+		for rows.Next() {
+			var a auc
+			var item int64
+			var variant string
+			var sold sql.NullBool
+			if err := rows.Scan(&a.id, &item, &variant, &a.price, &a.first, &a.last, &a.closed, &sold); err != nil {
+				rows.Close()
+				return n, err
+			}
+			a.sold = sold.Bool
+			k := [2]any{item, variant}
+			groups[k] = append(groups[k], a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return n, err
+		}
+		var change []int64
+		for _, g := range groups {
+			sort.Slice(g, func(i, j int) bool { return g[i].price < g[j].price })
+			for i, a := range g {
+				if !a.sold || a.closed < since {
+					continue
+				}
+				for _, b := range g[:i] {
+					if b.price >= a.price {
+						break
+					}
+					if b.first <= a.last && (b.closed == 0 || b.closed > a.closed) {
+						change = append(change, a.id)
+						break
+					}
+				}
+			}
+		}
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return n, err
+		}
+		upd, err := tx.PrepareContext(ctx, `UPDATE auction SET outcome='cancelled' WHERE house_id=? AND kind='gear' AND auction_id=?`)
+		if err != nil {
+			tx.Rollback()
+			return n, err
+		}
+		for _, id := range change {
+			if _, err := upd.ExecContext(ctx, h, id); err != nil {
+				upd.Close()
+				tx.Rollback()
+				return n, err
+			}
+		}
+		upd.Close()
+		if err := tx.Commit(); err != nil {
+			return n, err
+		}
+		n += int64(len(change))
+	}
+	return n, nil
+}
+
 // migrate adds columns introduced after a database was first created. CREATE TABLE IF NOT
 // EXISTS leaves existing tables alone, so new columns are added here.
 func migrate(db *sql.DB) ([]string, error) {
