@@ -330,7 +330,6 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 .toast.show { opacity: 1; transform: none; pointer-events: auto; }
 .toast span { color: var(--dim); font-size: 12.5px; }
 @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
-.flips .why { max-width: 46ch; }
 .flips td { vertical-align: middle; padding-top: 12px; padding-bottom: 12px; }
 .flips .item-cell { gap: 12px; }
 .flips .adv-item.q0 { color: var(--q0); } .flips .adv-item.q1 { color: var(--q1); } .flips .adv-item.q2 { color: var(--q2); }
