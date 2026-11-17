@@ -81,10 +81,23 @@ func (in *FlipInputs) Confidence() string {
 const bookLevels = 40
 
 // BuildFlipInputs reads current order books and 7 days of daily rows for every house.
+//
+// With now before the latest scan it rebuilds the inputs as they were at now (for the
+// backtest): order books from when auctions appeared, sold down and closed, and today's sales
+// from the raw events up to now. Today's market value and volatility then come from the days
+// before, since today's daily row already holds what happened after now.
 func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, now time.Time) (*FlipInputs, error) {
-	in := &FlipInputs{ComputedAt: now.Unix(), Houses: houses, SpanDays: 7}
+	at := now.Unix()
+	var latest sql.NullInt64
+	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&latest); err != nil {
+		return nil, err
+	}
+	past := latest.Valid && at < latest.Int64
+	in := &FlipInputs{ComputedAt: at, Houses: houses, SpanDays: 7}
 	from := rollup.DayString(now.AddDate(0, 0, -6), rollup.Berlin)
+	today := rollup.DayString(now, rollup.Berlin)
 	dayStart, _, _ := rollup.DayBounds(from, rollup.Berlin)
+	todayStart, _, _ := rollup.DayBounds(today, rollup.Berlin)
 
 	type key = Key
 	stats := map[key]map[string]*FlipStat{}
@@ -105,7 +118,7 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 	for _, h := range houses {
 		// History span: the 7-day window, or since this house was first scanned.
 		var first sql.NullInt64
-		if err := st.DB.QueryRowContext(ctx, `SELECT MIN(fetched_at) FROM snapshot WHERE house_id=?`, h.ID).Scan(&first); err != nil {
+		if err := st.DB.QueryRowContext(ctx, `SELECT MIN(fetched_at) FROM snapshot WHERE house_id=? AND fetched_at<=?`, h.ID, at).Scan(&first); err != nil {
 			return nil, err
 		}
 		start := dayStart
@@ -116,7 +129,7 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 			// Sales exist only since auctions were tracked here, which can be later than the
 			// first snapshot (a house switched from price_only): count from the first day with any.
 			var firstSale sql.NullString
-			if err := st.DB.QueryRowContext(ctx, `SELECT MIN(day) FROM item_daily WHERE house_id=? AND day>=? AND sold_lo>0`, h.ID, from).Scan(&firstSale); err != nil {
+			if err := st.DB.QueryRowContext(ctx, `SELECT MIN(day) FROM item_daily WHERE house_id=? AND day>=? AND day<=? AND sold_lo>0`, h.ID, from, today).Scan(&firstSale); err != nil {
 				return nil, err
 			}
 			if firstSale.Valid {
@@ -125,31 +138,17 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 				}
 			}
 		}
-		span := math.Max(float64(now.Unix()-start)/86400, 1.0/24)
+		span := math.Max(float64(at-start)/86400, 1.0/24)
 		in.SpanDays = math.Min(in.SpanDays, span)
 
 		rows, err := st.DB.QueryContext(ctx, `SELECT item_id, variant, day, COALESCE(fair_unit,0), COALESCE(price_cv,0),
-			sold_lo, COALESCE(sales,0), COALESCE(largest_sale,0) FROM item_daily WHERE house_id=? AND day>=? ORDER BY day`, h.ID, from)
+			sold_lo, COALESCE(sales,0), COALESCE(largest_sale,0) FROM item_daily WHERE house_id=? AND day>=? AND day<=? ORDER BY day`, h.ID, from, today)
 		if err != nil {
 			return nil, err
 		}
 		type sums struct{ sold, sales, largest int64 }
 		agg := map[key]*sums{}
-		for rows.Next() {
-			var k key
-			var day string
-			var fair, sold, sales, largest int64
-			var cv float64
-			if err := rows.Scan(&k.Item, &k.Variant, &day, &fair, &cv, &sold, &sales, &largest); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			s := get(k, h.Faction)
-			if fair > 0 {
-				s.Fair = fair
-			}
-			// Any volatile day in the window counts: today's partial row must not clear it.
-			s.Volatile = s.Volatile || cv > 0.5
+		add := func(k key, sold, sales, largest int64) {
 			a := agg[k]
 			if a == nil {
 				a = &sums{}
@@ -159,7 +158,55 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 			a.sales += sales
 			a.largest = max(a.largest, largest)
 		}
+		for rows.Next() {
+			var k key
+			var day string
+			var fair, sold, sales, largest int64
+			var cv float64
+			if err := rows.Scan(&k.Item, &k.Variant, &day, &fair, &cv, &sold, &sales, &largest); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if past && day == today {
+				continue // holds the rest of the day: counted from the raw events below
+			}
+			s := get(k, h.Faction)
+			if fair > 0 {
+				s.Fair = fair
+			}
+			// Any volatile day in the window counts: today's partial row must not clear it.
+			s.Volatile = s.Volatile || cv > 0.5
+			add(k, sold, sales, largest)
+		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if past {
+			// Today's certain sales up to now, as the rollup counts them.
+			rows, err := st.DB.QueryContext(ctx, `SELECT item_id, variant, SUM(units), COUNT(*), MAX(units) FROM (
+				SELECT item_id, variant, units FROM sale_event WHERE house_id=? AND ts>=? AND ts<=? AND outcome IN ('sold','partial')
+				UNION ALL
+				SELECT item_id, variant, qty_last FROM auction WHERE house_id=? AND closed_at>=? AND closed_at<=? AND outcome='sold'
+			) GROUP BY item_id, variant`, h.ID, todayStart, at, h.ID, todayStart, at)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var k key
+				var sold, sales, largest int64
+				if err := rows.Scan(&k.Item, &k.Variant, &sold, &sales, &largest); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				get(k, h.Faction)
+				add(k, sold, sales, largest)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+		}
 		for k, a := range agg {
 			s := get(k, h.Faction)
 			s.Sales = a.sales
@@ -170,7 +217,7 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 
 		// Current lowest price and supply from the newest snapshots.
 		rows, err = st.DB.QueryContext(ctx, `SELECT item_id, variant, COALESCE(min_unit,0), listed_qty, COALESCE(p20_unit,0) FROM item_snapshot
-			WHERE snapshot_id IN (SELECT MAX(id) FROM snapshot WHERE house_id=? GROUP BY kind)`, h.ID)
+			WHERE snapshot_id IN (SELECT MAX(id) FROM snapshot WHERE house_id=? AND fetched_at<=? GROUP BY kind)`, h.ID, at)
 		if err != nil {
 			return nil, err
 		}
@@ -219,8 +266,7 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 		if h.ViewOnly || !h.Tracked {
 			continue
 		}
-		rows, err := st.DB.QueryContext(ctx, `SELECT item_id, variant, unit_price, SUM(qty_last) FROM auction
-			WHERE house_id=? AND closed_at IS NULL AND unit_price > 0 GROUP BY item_id, variant, unit_price ORDER BY item_id, variant, unit_price`, h.ID)
+		rows, err := bookRows(ctx, st.DB, h.ID, keep, past, at)
 		if err != nil {
 			return nil, err
 		}
@@ -276,6 +322,30 @@ func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 			Deposit: int64(math.Round(float64(sellPrice[k.Item]) * depositRate)), Houses: stats[k]})
 	}
 	return in, nil
+}
+
+// bookRows reads the open listings of a house by item and price, cheapest first. In the past
+// (the backtest) it rebuilds them at t for the wanted items: listings seen by t and not closed
+// by then, each with the units it still had (its last quantity plus partial sales after t).
+func bookRows(ctx context.Context, db *sql.DB, house int64, want []Key, past bool, t int64) (*sql.Rows, error) {
+	if !past {
+		return db.QueryContext(ctx, `SELECT item_id, variant, unit_price, SUM(qty_last) FROM auction
+			WHERE house_id=? AND closed_at IS NULL AND unit_price > 0 GROUP BY item_id, variant, unit_price ORDER BY item_id, variant, unit_price`, house)
+	}
+	ids := make([]string, 0, len(want))
+	seen := map[int64]bool{}
+	for _, k := range want {
+		if !seen[k.Item] {
+			seen[k.Item] = true
+			ids = append(ids, fmt.Sprint(k.Item))
+		}
+	}
+	return db.QueryContext(ctx, `SELECT a.item_id, a.variant, a.unit_price, SUM(a.qty_last + COALESCE(p.u, 0)) FROM auction a
+		LEFT JOIN (SELECT kind, auction_id, SUM(units) u FROM sale_event WHERE house_id=? AND ts>? GROUP BY kind, auction_id) p
+			ON p.kind=a.kind AND p.auction_id=a.auction_id
+		WHERE a.house_id=? AND a.item_id IN (SELECT value FROM json_each(?)) AND a.first_seen<=? AND (a.closed_at IS NULL OR a.closed_at>?) AND a.unit_price>0
+		GROUP BY a.item_id, a.variant, a.unit_price ORDER BY a.item_id, a.variant, a.unit_price`,
+		house, t, house, "["+strings.Join(ids, ",")+"]", t, t)
 }
 
 // Risk is how long the player is willing to tie gold up in stock.
