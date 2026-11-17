@@ -887,13 +887,12 @@ async function loadFlips(gold, style, fromScan = false) {
     return;
   }
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
-    <thead><tr><th>Item</th><th>Buy</th><th>List at</th><th>Profit</th><th>Play</th><th title="Units listed cheaper than yours">Cancel if position &gt;</th></tr></thead>
+    <thead><tr><th>Item</th><th>Buy at</th><th>List at</th><th>Profit</th><th>Play</th><th title="Units listed cheaper than yours">Cancel if position &gt;</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr class="${isNew(f) ? "is-new" : ""}">
-      <td><span class="kind kind-${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || esc(f.kind)}</span>${
-        isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
+      <td>${isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
         f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}
         <a class="adv-item" href="#/item/${f.item_id}" title="${esc(f.why)}">${esc(f.name)}</a></td>
-      <td data-label="Buy">${count(f.buy_units)} × ≤ ${plain(f.buy_up_to_price)}<span class="sub-num">${factionName(f.buy_house)} · ${plain(f.buy_cost)}</span></td>
+      <td data-label="Buy at">≤ ${money(f.buy_up_to_price)}<span class="sub-num">${count(f.buy_units)} on ${factionName(f.buy_house)} · ${plain(f.buy_cost)}</span></td>
       <td data-label="List at">${money(f.sell_at)}<span class="sub-num">${factionName(f.sell_house)} · ${f.list_hours}h</span></td>
       <td data-label="Profit" class="pos" title="${pct(f.sold_out_chance)} chance it all sells · ${plain(f.profit_if_sold)} if it does">${money(f.expected_profit)}</td>
       <td data-label="Play"><span class="play-name play-${esc(f.play)}" title="${esc(PLAY[f.play]?.[1] || "")}">${PLAY[f.play]?.[0] || esc(f.play)}</span></td>
