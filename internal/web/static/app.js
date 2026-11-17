@@ -407,8 +407,12 @@ async function renderItem(id, variant) {
     </div>`;
   drawChart(hist.points);
   renderWhen(sell);
-  api(`/api/item/${id}/book?house=${state.house}${vq}`).then((b) => drawBook(b, it.fair))
-    .catch((err) => { const el = $("#book"); if (el) el.innerHTML = emptyState("No order book", esc(err.message)); });
+  // The page may have moved on (another item or house) by the time the book arrives.
+  const bookFor = `${id}|${variant || ""}|${state.house}`;
+  $("#book").dataset.for = bookFor;
+  const bookHere = () => $("#book")?.dataset.for === bookFor;
+  api(`/api/item/${id}/book?house=${state.house}${vq}`).then((b) => { if (bookHere()) drawBook(b, it.fair); })
+    .catch((err) => { if (bookHere()) $("#book").innerHTML = emptyState("No order book", esc(err.message)); });
   view.querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", async () => {
     state.range = b.dataset.range; store.set("range", state.range);
     view.querySelectorAll("[data-range]").forEach((x) => x.setAttribute("aria-pressed", x === b));
@@ -510,7 +514,13 @@ function drawBook(b, fair) {
   const el = $("#book");
   if (!el) return;
   const listed = b.listed || [], sold = b.sold || [];
-  if (!listed.length && !sold.length) { el.innerHTML = emptyState("Nothing listed", "No open listings and no recent purchases on this house."); return; }
+  if (!listed.length && !sold.length) {
+    // Price-only houses keep no individual auctions, so there's no book to draw.
+    el.innerHTML = b.tracked ? emptyState("Nothing listed", "No open listings and no recent purchases on this house.")
+      : emptyState("No order book", "Auctions aren't tracked on this house (price only), so its listings by price aren't known.");
+    $("#book-note").textContent = "";
+    return;
+  }
   // Range: cheapest price seen, up to the dearest sale or the 95th-percentile listed unit
   // (and market value), so a single absurd listing doesn't squash the rest.
   const total = listed.reduce((a, l) => a + l.q, 0);

@@ -315,11 +315,16 @@ func (s *Server) toolMovers(ctx context.Context, _ *mcp.CallToolRequest, in Move
 type FlipsIn struct {
 	Gold  float64 `json:"gold,omitempty" jsonschema:"how much gold the player has to invest, default 40"`
 	Style string  `json:"style,omitempty" jsonschema:"active (checks about hourly), regular (default: 4-5 times a day) or away (posts 24h listings, back in ~12 hours)"`
+	Risk  string  `json:"risk,omitempty" jsonschema:"deprecated, use style: low, medium or high map to away, regular or active"`
 	Limit int     `json:"limit,omitempty" jsonschema:"default 15, max 50"`
 }
 
 func (s *Server) toolFlips(ctx context.Context, _ *mcp.CallToolRequest, in FlipsIn) (*mcp.CallToolResult, *flipsResult, error) {
-	res, err := s.flips(ctx, int64(in.Gold*10000), in.Style, clampLimit(in.Limit, 15, 50))
+	style := in.Style
+	if style == "" {
+		style = in.Risk // the old parameter, still accepted like ?risk= on /api/flips
+	}
+	res, err := s.flips(ctx, int64(in.Gold*10000), style, clampLimit(in.Limit, 15, 50))
 	return nil, res, err
 }
 

@@ -134,18 +134,14 @@ func (c *Collector) Setup(ctx context.Context) error {
 		return err
 	} else if done == "" {
 		start := time.Now()
-		days := 6
-		for _, keep := range []int{c.Cfg.AuctionRetentionDays, c.Cfg.SnapshotFullDays} {
-			if keep > 0 {
-				days = min(days, keep-1)
-			}
-		}
-		days = max(days, 1)
+		days := c.Cfg.RollupDays(6)
 		local := start.In(rollup.Berlin)
 		from := local.AddDate(0, 0, -(days - 1))
 		fromDay, _, _ := rollup.DayBounds(rollup.DayString(from, rollup.Berlin), rollup.Berlin)
 		n, err := c.Store.ReclassifyGearSales(ctx, fromDay)
-		if err == nil && n > 0 {
+		if err == nil {
+			// Roll up even when nothing changed now: an earlier start may have reclassified
+			// and then failed to roll up, and wouldn't find anything left to change.
 			_, err = rollup.Range(ctx, c.Store.DB, from, local, rollup.Options{AmbiguousWeight: c.Cfg.AmbiguousWeight})
 		}
 		if err != nil {

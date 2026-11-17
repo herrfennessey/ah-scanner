@@ -225,6 +225,18 @@ func (c Config) RequireCredentials() error {
 	return nil
 }
 
+// RollupDays caps how many days back (counting today) may be rolled up again: days older than
+// the detail retention would be rebuilt from pruned auctions and thinned snapshots, overwriting
+// good item_daily rows (which are kept forever) with undercounts. At least 1.
+func (c Config) RollupDays(days int) int {
+	for _, keep := range []int{c.AuctionRetentionDays, c.SnapshotFullDays} {
+		if keep > 0 && days > keep-1 {
+			days = keep - 1
+		}
+	}
+	return max(days, 1)
+}
+
 func (c Config) DBPath() string     { return filepath.Join(c.DataDir, "ahc.db") }
 func (c Config) RawDir() string     { return filepath.Join(c.DataDir, "raw") }
 func (c Config) SamplesDir() string { return filepath.Join(c.DataDir, "samples") }

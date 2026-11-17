@@ -249,8 +249,8 @@ func addEvidence(ctx context.Context, db *sql.DB, house int64, faction string, k
 	}
 	rows, err = db.QueryContext(ctx, `SELECT e.kind, e.auction_id, e.ts, e.units FROM sale_event e
 		JOIN auction a ON a.house_id=e.house_id AND a.kind=e.kind AND a.auction_id=e.auction_id
-		WHERE e.house_id=? AND e.outcome='partial' AND e.ts<=? AND a.front=1 AND a.first_seen>? AND a.first_seen<=?
-			AND a.item_id IN (SELECT value FROM json_each(?))`, house, at, at-4*86400, at-86400, ids)
+		WHERE e.house_id=? AND e.outcome='partial' AND e.ts>? AND e.ts<=? AND a.front=1 AND a.first_seen>? AND a.first_seen<=?
+			AND a.item_id IN (SELECT value FROM json_each(?))`, house, at-4*86400, at, at-4*86400, at-86400, ids)
 	if err != nil {
 		return nil, fmt.Errorf("evidence partials: %w", err)
 	}

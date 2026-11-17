@@ -26,7 +26,9 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 	}
 	// And gear "sales" from before tracker rule 4c (a cheaper copy outlasted it): reclassify the
 	// window and roll its days up again, as the collector does once at startup.
-	from := now.AddDate(0, 0, -f.days-1)
+	// Never further back than the detail retention, or good daily rows would be overwritten.
+	days := cfg.RollupDays(f.days + 2)
+	from := now.AddDate(0, 0, -(days - 1))
 	fromDay, _, _ := rollup.DayBounds(rollup.DayString(from, rollup.Berlin), rollup.Berlin)
 	if n, err := st.ReclassifyGearSales(ctx, fromDay); err != nil {
 		return err

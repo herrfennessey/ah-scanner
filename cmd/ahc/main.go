@@ -205,15 +205,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 	case "rollup":
 		// Days older than the detail retention would be rebuilt from pruned auctions and thinned
 		// snapshots, overwriting good item_daily rows (which are kept forever) with undercounts.
-		days := f.days
-		for _, keep := range []int{cfg.AuctionRetentionDays, cfg.SnapshotFullDays} {
-			if keep > 0 && days > keep-1 {
-				days = keep - 1
-			}
-		}
-		if days < 1 {
-			days = 1
-		}
+		days := cfg.RollupDays(f.days)
 		if days != f.days {
 			fmt.Fprintf(os.Stderr, "ahc: rolling up %d days, not %d: older detail has been pruned by retention\n", days, f.days)
 		}
