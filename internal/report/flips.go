@@ -101,13 +101,15 @@ func (in *FlipInputs) Confidence() string {
 
 const bookLevels = 40
 
-// BuildFlipInputs reads current order books and 7 days of daily rows for every house.
 // CachedHouses reads the houses from the stored flip inputs: the collector resolved them, so a
 // copied database brings them along.
 func CachedHouses(ctx context.Context, st *store.Store) ([]FlipHouse, error) {
 	_, b, err := st.LoadFlipCache(ctx)
-	if err != nil || b == nil {
-		return nil, fmt.Errorf("no flip cache to take the houses from (run the collector once): %v", err)
+	if err != nil {
+		return nil, fmt.Errorf("read the flip cache: %w", err)
+	}
+	if b == nil {
+		return nil, fmt.Errorf("no flip cache to take the houses from (run the collector once)")
 	}
 	var in FlipInputs
 	if err := json.Unmarshal(b, &in); err != nil {
@@ -141,6 +143,7 @@ func RebuildFlipCache(ctx context.Context, st *store.Store, depositRate float64)
 	return in, st.SaveFlipCache(ctx, in.ComputedAt, b)
 }
 
+// BuildFlipInputs reads current order books and 7 days of daily rows for every house.
 func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, now time.Time) (*FlipInputs, error) {
 	return buildFlipInputs(ctx, st, houses, depositRate, now, false)
 }
