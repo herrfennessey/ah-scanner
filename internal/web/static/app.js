@@ -890,9 +890,10 @@ async function loadFlips(gold, style, fromScan = false) {
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
     <thead><tr><th>Item</th><th>Buy from</th><th>Sell at</th><th>Buy at</th><th>List at</th><th>Profit</th><th>Play</th><th title="Units listed cheaper than yours">Cancel if position &gt;</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr class="${isNew(f) ? "is-new" : ""}">
-      <td>${isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
-        f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}
-        <a class="adv-item" href="#/item/${f.item_id}" title="${esc(f.why)}">${esc(f.name)}</a></td>
+      <td><div class="item-cell">${icon({ id: f.item_id, name: f.name, icon: f.icon, quality: f.quality })}<div>
+        <a class="adv-item q${f.quality ?? 1}" href="#/item/${f.item_id}" title="${esc(f.why)}">${esc(f.name)}</a>${
+        isNew(f) || f.gone_soon >= 0.5 ? `<div class="flip-tags">${isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
+        f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}</div>` : ""}</div></div></td>
       <td data-label="Buy from">${houseTag(f.buy_house)}</td>
       <td data-label="Sell at">${houseTag(f.sell_house)}</td>
       <td data-label="Buy at">${count(f.buy_units)} × ≤ ${money(f.buy_up_to_price)}</td>

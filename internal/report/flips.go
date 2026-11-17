@@ -72,6 +72,8 @@ type FlipItem struct {
 	Item    int64                `json:"item"`
 	Variant string               `json:"variant,omitempty"`
 	Name    string               `json:"name"`
+	Icon    string               `json:"icon,omitempty"`
+	Quality int                  `json:"quality,omitempty"`
 	Deposit int64                `json:"deposit"` // estimated faction-house deposit per unit
 	Houses  map[string]*FlipStat `json:"houses"`  // by faction
 }
@@ -369,17 +371,24 @@ func buildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 		return nil, err
 	}
 	sellPrice := map[int64]int64{}
-	rows, err := st.DB.QueryContext(ctx, `SELECT id, COALESCE(sell_price,0) FROM item`)
+	type look struct {
+		icon    string
+		quality int
+	}
+	looks := map[int64]look{}
+	rows, err := st.DB.QueryContext(ctx, `SELECT id, COALESCE(sell_price,0), COALESCE(icon,''), COALESCE(quality,1) FROM item`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id, sp int64
-		if err := rows.Scan(&id, &sp); err != nil {
+		var l look
+		if err := rows.Scan(&id, &sp, &l.icon, &l.quality); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		sellPrice[id] = sp
+		looks[id] = l
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -391,6 +400,7 @@ func buildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, d
 	})
 	for _, k := range keep {
 		in.Items = append(in.Items, FlipItem{Item: k.Item, Variant: k.Variant, Name: ItemLabel(names, k),
+			Icon: looks[k.Item].icon, Quality: looks[k.Item].quality,
 			Deposit: int64(math.Round(float64(sellPrice[k.Item]) * depositRate)), Houses: stats[k]})
 	}
 	return in, nil
@@ -565,6 +575,8 @@ type Flip struct {
 	ItemID    int64  `json:"item_id"`
 	Variant   string `json:"variant,omitempty"`
 	Name      string `json:"name"`
+	Icon      string `json:"icon,omitempty"`
+	Quality   int    `json:"quality,omitempty"`
 	Kind      string `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater, sold to Alliance players)"`
 	BuyHouse  string `json:"buy_house"`
 	SellHouse string `json:"sell_house"`
@@ -1015,7 +1027,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		listed := o.p.ListHours / 24
 		hold = soldOut*math.Min(listed, math.Max(days, 1.0/24)) + (1-soldOut)*listed
 	}
-	f := Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
+	f := Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Icon: it.Icon, Quality: it.Quality, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
 		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Play: o.play, ListHours: int(o.p.ListHours), Profit: profit, ROI: roi,
 		Expected: expected, SellChance: chance, Undercut: under, SoldOut: soldOut, GoneSoon: goneSoon(buy.Faction, b),
 		DepositAtRisk: depositAtRisk, Demand: rate,
