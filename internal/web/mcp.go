@@ -36,7 +36,7 @@ func (s *Server) mcpHandler() http.Handler {
 	mcp.AddTool(srv, &mcp.Tool{Name: "movers", Annotations: ro,
 		Description: "Items that sell reliably, ranked by gold traded per day (sold per day × market value). Filter by item class, required level and minimum sales."}, s.toolMovers)
 	mcp.AddTool(srv, &mcp.Tool{Name: "flips", Annotations: ro,
-		Description: "Small, low-risk trades for the player's gold (default 40g). Three kinds: relist (buy listings dumped well under the next price in a house and relist just under it), cross (buy on Blackwater, sell on Horde) and alliance (buy on Horde, sell on Blackwater under what Alliance players pay at home, only for items the Alliance buys several times a day). The risk level (low by default) sets how long gold may sit in stock: your units plus competing listings within 10% of your price must all sell within ~6 h (low), ~12 h (medium) or ~1.5 days (high), in markets with 20, 10 or 4+ sales a day; it also sets the share of gold per flip (25/40/60%) and the minimum return (15/20/30%). Below high risk, sliding markets are left out (resale more than 15% under market value, or under the Alliance's market value for alliance flips). Low risk only sells on Horde (Blackwater has a 15% cut, 5x deposit, fewer buyers and faster undercuts). expected_profit weighs each listing round by its measured sell_chance; a round that doesn't sell loses the deposit and relists ~3% lower. profit_if_sold assumes everything sells. Deposits are 20% of vendor price, 1s minimum per auction, 5x on Blackwater; at low risk the profit must also survive two undercut-and-relist rounds, at medium one. gone_soon is the measured chance the cheap listing is gone within an hour: act fast. Flips are ranked by expected profit per day of holding. Never resells above market value, nor on Blackwater above the dearer of the Horde and Alliance prices (every Blackwater buyer can buy at home). An empty list means nothing qualifies right now; the funnel says why."}, s.toolFlips)
+		Description: "Small trades for the player's gold (default 40g), for how they play. Three kinds: relist (buy listings dumped well under the next price in a house and relist just under it), cross (buy on Blackwater, sell on Horde) and alliance (buy on Horde, sell on Blackwater under what Alliance players pay at home, only for items the Alliance buys several times a day). The style (regular by default) is how often the player comes back to relist what was undercut: active (about hourly, 8h listings, everything should be gone within 12h), regular (every ~5h, 8h listings, within a day) or away (a 24h listing, back in ~12h; Horde only, no volatile items). Each flip must pass on evidence, not asking prices: the resale is capped at the median price buyers actually paid over the last 24h, at least 2 purchases at or above it in the last 12h (recent_sales_above), its size fits the recent purchases at or above that price, and markets whose asking price falls more than 10% a day are left out (except active). sell_chance is the measured share of this item's cheapest-when-posted listings that sold before the next visit; expected_profit weighs the style's listing rounds by it, each missed round losing the deposit and ~3% to an undercut, and values stock still unsold at the end of the window at the going price. Gear counts as sold only if no cheaper copy outlasted it, since a vanished listing may have been cancelled; buys within one scan of the listing appearing are never seen. Deposits are 20% of vendor price, 1s minimum per auction, 5x on Blackwater. gone_soon is the measured chance the cheap listing is gone within an hour: act fast. Ranked by expected profit per day of holding. Never resells on Blackwater above the dearer of the Horde and Alliance prices. An empty list means nothing qualifies right now; the funnel says why."}, s.toolFlips)
 	mcp.AddTool(srv, &mcp.Tool{Name: "collector_status", Annotations: ro,
 		Description: "Health of the data: houses, listing counts, last scan time and any collector problems (failing or frozen feeds)."}, s.toolStatus)
 
@@ -314,12 +314,17 @@ func (s *Server) toolMovers(ctx context.Context, _ *mcp.CallToolRequest, in Move
 
 type FlipsIn struct {
 	Gold  float64 `json:"gold,omitempty" jsonschema:"how much gold the player has to invest, default 40"`
-	Risk  string  `json:"risk,omitempty" jsonschema:"low (default: busy markets, everything sells within ~6 hours), medium (~12 hours) or high (slower markets, up to ~1.5 days, bigger margins)"`
+	Style string  `json:"style,omitempty" jsonschema:"active (checks about hourly), regular (default: 4-5 times a day) or away (posts 24h listings, back in ~12 hours)"`
+	Risk  string  `json:"risk,omitempty" jsonschema:"deprecated, use style: low, medium or high map to away, regular or active"`
 	Limit int     `json:"limit,omitempty" jsonschema:"default 15, max 50"`
 }
 
 func (s *Server) toolFlips(ctx context.Context, _ *mcp.CallToolRequest, in FlipsIn) (*mcp.CallToolResult, *flipsResult, error) {
-	res, err := s.flips(ctx, int64(in.Gold*10000), in.Risk, clampLimit(in.Limit, 15, 50))
+	style := in.Style
+	if style == "" {
+		style = in.Risk // the old parameter, still accepted like ?risk= on /api/flips
+	}
+	res, err := s.flips(ctx, int64(in.Gold*10000), style, clampLimit(in.Limit, 15, 50))
 	return nil, res, err
 }
 

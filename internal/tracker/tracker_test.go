@@ -44,6 +44,20 @@ func TestDiffRules(t *testing.T) {
 			now:  t30, wantID: 1, wantOutcome: Sold, wantUnits: 20,
 		},
 		{
+			name: "rule4c gear vanished while a cheaper copy stayed is cancelled",
+			kind: listing.Gear,
+			open: []Open{open(1, 3914, 300, 1, listing.VeryLong), open(2, 3914, 250, 1, listing.VeryLong)},
+			cur:  []listing.Listing{cur(2, 3914, 250, 1, listing.VeryLong)},
+			now:  t30, wantID: 1, wantOutcome: Cancelled, wantUnits: 1,
+		},
+		{
+			name: "rule5 gear vanished as the cheapest copy is sold",
+			kind: listing.Gear,
+			open: []Open{open(1, 3914, 250, 1, listing.VeryLong), open(2, 3914, 300, 1, listing.VeryLong)},
+			cur:  []listing.Listing{cur(2, 3914, 300, 1, listing.VeryLong)},
+			now:  t30, wantID: 1, wantOutcome: Sold, wantUnits: 1,
+		},
+		{
 			name: "rule2+5 vanish at LONG with 30 min gap is sold",
 			kind: listing.Commodity,
 			open: []Open{open(1, 7069, 100, 5, listing.Long)},
@@ -130,11 +144,13 @@ func TestDiffRules(t *testing.T) {
 			now:  t30, wantID: 1, wantOutcome: Sold, wantUnits: 5,
 		},
 		{
+			// Gear isn't filled cheapest first, so a cheaper copy staying doesn't make it certainly
+			// unsold (4b); it does make it ambiguous rather than a certain sale (4c).
 			name: "rule4b is commodity only",
 			kind: listing.Gear,
 			open: []Open{open(1, 4304, 200, 5, listing.Long), open(2, 4304, 150, 3, listing.Long)},
 			cur:  []listing.Listing{cur(2, 4304, 150, 3, listing.Long)},
-			now:  t30, wantID: 1, wantOutcome: Sold, wantUnits: 5,
+			now:  t30, wantID: 1, wantOutcome: Cancelled, wantUnits: 5,
 		},
 	}
 	for _, tc := range tests {

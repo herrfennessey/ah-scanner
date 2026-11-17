@@ -127,6 +127,49 @@ func (c *Collector) Setup(ctx context.Context) error {
 			return err
 		}
 	}
+	// Gear recorded as sold before tracker rule 4c: reclassify the last days and roll them up
+	// again, so sales counts and the flip planner agree with the rule. Once.
+	const gearKey = "backfill.gear.rule4c"
+	if done, err := c.Store.Meta(ctx, gearKey); err != nil {
+		return err
+	} else if done == "" {
+		start := time.Now()
+		days := c.Cfg.RollupDays(6)
+		local := start.In(rollup.Berlin)
+		from := local.AddDate(0, 0, -(days - 1))
+		fromDay, _, _ := rollup.DayBounds(rollup.DayString(from, rollup.Berlin), rollup.Berlin)
+		n, err := c.Store.ReclassifyGearSales(ctx, fromDay)
+		if err == nil {
+			// Roll up even when nothing changed now: an earlier start may have reclassified
+			// and then failed to roll up, and wouldn't find anything left to change.
+			_, err = rollup.Range(ctx, c.Store.DB, from, local, rollup.Options{AmbiguousWeight: c.Cfg.AmbiguousWeight})
+		}
+		if err != nil {
+			c.Log.Error("reclassify gear sales", "err", err)
+		} else {
+			c.Log.Info("reclassified gear sales", "cancelled", n, "days", days, "took", time.Since(start).Round(time.Second))
+			if err := c.Store.SetMeta(ctx, gearKey, start.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+	}
+	// Auctions recorded before auction.front existed: mark the last few days, which the flip
+	// planner's sell rates read. Once, like the backfill above.
+	const frontKey = "backfill.auction.front"
+	if done, err := c.Store.Meta(ctx, frontKey); err != nil {
+		return err
+	} else if done == "" {
+		start := time.Now()
+		n, err := c.Store.BackfillFront(ctx, start.AddDate(0, 0, -5).Unix())
+		if err != nil {
+			c.Log.Error("backfill front", "err", err)
+		} else {
+			c.Log.Info("backfilled cheapest-when-posted", "auctions", n, "took", time.Since(start).Round(time.Second))
+			if err := c.Store.SetMeta(ctx, frontKey, start.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

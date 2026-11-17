@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS auction (
   unit_price INT, buyout INT, bid INT,
   qty_first INT, qty_last INT, first_seen INT, last_seen INT,
   tl_first TEXT, tl_last TEXT, closed_at INT, outcome TEXT,
+  -- front: 1 if it was the cheapest of its item when first seen (NULL: recorded before this
+  -- was tracked). How often such listings sell is what a seller can expect.
+  front INT,
   PRIMARY KEY (house_id, kind, auction_id));
 CREATE INDEX IF NOT EXISTS auction_open ON auction (house_id, kind) WHERE closed_at IS NULL;
 CREATE INDEX IF NOT EXISTS auction_item ON auction (house_id, item_id, closed_at);

@@ -155,8 +155,16 @@ func (s *Store) ApplySnapshot(ctx context.Context, sn Snapshot, cur []listing.Li
 	diff := tracker.Diff(sn.Kind, open, cur, now)
 	res.New, res.Seen = len(diff.New), len(diff.Seen)
 
+	// The cheapest price of each item in this snapshot: a new listing at it is the front.
+	cheapest := map[[2]any]int64{}
+	for _, l := range cur {
+		k := [2]any{l.ItemID, l.Variant}
+		if m, ok := cheapest[k]; l.UnitPrice > 0 && (!ok || l.UnitPrice < m) {
+			cheapest[k] = l.UnitPrice
+		}
+	}
 	ins, err := tx.PrepareContext(ctx, `INSERT INTO auction (house_id, kind, auction_id, item_id, variant, unit_price, buyout, bid,
-		qty_first, qty_last, first_seen, last_seen, tl_first, tl_last) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		qty_first, qty_last, first_seen, last_seen, tl_first, tl_last, front) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(house_id, kind, auction_id) DO UPDATE SET closed_at=NULL, outcome=NULL,
 		qty_last=excluded.qty_last, last_seen=excluded.last_seen, tl_last=excluded.tl_last`)
 	if err != nil {
@@ -165,7 +173,7 @@ func (s *Store) ApplySnapshot(ctx context.Context, sn Snapshot, cur []listing.Li
 	defer ins.Close()
 	for _, l := range diff.New {
 		if _, err := ins.ExecContext(ctx, sn.HouseID, kind, l.AuctionID, l.ItemID, l.Variant, l.UnitPrice, l.Buyout, l.Bid,
-			l.Quantity, l.Quantity, now, now, l.TimeLeft, l.TimeLeft); err != nil {
+			l.Quantity, l.Quantity, now, now, l.TimeLeft, l.TimeLeft, l.UnitPrice > 0 && l.UnitPrice <= cheapest[[2]any{l.ItemID, l.Variant}]); err != nil {
 			return res, fmt.Errorf("insert auction: %w", err)
 		}
 	}
@@ -569,6 +577,141 @@ func (s *Store) PublishTimes(ctx context.Context, since int64) (map[string][]int
 	return out, rows.Err()
 }
 
+// BackfillFront sets auction.front for auctions first seen since the given time that predate
+// it, from the cheapest price of their item in the snapshot that first listed them. One house
+// and kind at a time, so the collector's writes wait seconds, not minutes.
+func (s *Store) BackfillFront(ctx context.Context, since int64) (int64, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT house_id, kind FROM snapshot`)
+	if err != nil {
+		return 0, err
+	}
+	var hk [][2]any
+	for rows.Next() {
+		var h int64
+		var k string
+		if err := rows.Scan(&h, &k); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		hk = append(hk, [2]any{h, k})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, x := range hk {
+		res, err := s.DB.ExecContext(ctx, `UPDATE auction SET front = COALESCE(unit_price > 0 AND unit_price <= (
+				SELECT i.min_unit FROM snapshot sn JOIN item_snapshot i ON i.snapshot_id=sn.id
+				WHERE sn.house_id=auction.house_id AND sn.kind=auction.kind AND sn.fetched_at>=auction.first_seen AND sn.fetched_at<auction.first_seen+3600
+					AND COALESCE(NULLIF(sn.last_modified,0), sn.fetched_at)=auction.first_seen
+					AND i.item_id=auction.item_id AND i.variant=auction.variant LIMIT 1), 0)
+			WHERE house_id=? AND kind=? AND front IS NULL AND first_seen>=?`, x[0], x[1], since)
+		if err != nil {
+			return n, err
+		}
+		c, _ := res.RowsAffected()
+		n += c
+	}
+	return n, nil
+}
+
+// ReclassifyGearSales applies the tracker's rule 4c to gear recorded as sold since the given
+// time, before the rule existed: a copy that vanished while a cheaper one, listed before it, was
+// still there afterwards becomes cancelled. Returns how many changed; the daily rows of those
+// days need rolling up again.
+func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, error) {
+	houses, err := s.DB.QueryContext(ctx, `SELECT DISTINCT house_id FROM auction WHERE kind='gear'`)
+	if err != nil {
+		return 0, err
+	}
+	var hs []int64
+	for houses.Next() {
+		var h int64
+		if err := houses.Scan(&h); err != nil {
+			houses.Close()
+			return 0, err
+		}
+		hs = append(hs, h)
+	}
+	houses.Close()
+	if err := houses.Err(); err != nil {
+		return 0, err
+	}
+	type auc struct {
+		id, price, first, last, closed int64 // closed 0: still open
+		sold                           bool
+	}
+	var n int64
+	for _, h := range hs {
+		// Everything that could have been up next to a sale since then: listings last longer
+		// than 2 days in no game version.
+		rows, err := s.DB.QueryContext(ctx, `SELECT auction_id, item_id, variant, unit_price, first_seen, last_seen, COALESCE(closed_at, 0), outcome='sold'
+			FROM auction WHERE house_id=? AND kind='gear' AND unit_price>0 AND (closed_at IS NULL OR closed_at>=?)`, h, since-2*86400)
+		if err != nil {
+			return n, err
+		}
+		groups := map[[2]any][]auc{}
+		for rows.Next() {
+			var a auc
+			var item int64
+			var variant string
+			var sold sql.NullBool
+			if err := rows.Scan(&a.id, &item, &variant, &a.price, &a.first, &a.last, &a.closed, &sold); err != nil {
+				rows.Close()
+				return n, err
+			}
+			a.sold = sold.Bool
+			k := [2]any{item, variant}
+			groups[k] = append(groups[k], a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return n, err
+		}
+		var change []int64
+		for _, g := range groups {
+			sort.Slice(g, func(i, j int) bool { return g[i].price < g[j].price })
+			for i, a := range g {
+				if !a.sold || a.closed < since {
+					continue
+				}
+				for _, b := range g[:i] {
+					if b.price >= a.price {
+						break
+					}
+					if b.first <= a.last && (b.closed == 0 || b.closed > a.closed) {
+						change = append(change, a.id)
+						break
+					}
+				}
+			}
+		}
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return n, err
+		}
+		upd, err := tx.PrepareContext(ctx, `UPDATE auction SET outcome='cancelled' WHERE house_id=? AND kind='gear' AND auction_id=?`)
+		if err != nil {
+			tx.Rollback()
+			return n, err
+		}
+		for _, id := range change {
+			if _, err := upd.ExecContext(ctx, h, id); err != nil {
+				upd.Close()
+				tx.Rollback()
+				return n, err
+			}
+		}
+		upd.Close()
+		if err := tx.Commit(); err != nil {
+			return n, err
+		}
+		n += int64(len(change))
+	}
+	return n, nil
+}
+
 // migrate adds columns introduced after a database was first created. CREATE TABLE IF NOT
 // EXISTS leaves existing tables alone, so new columns are added here.
 func migrate(db *sql.DB) ([]string, error) {
@@ -577,6 +720,7 @@ func migrate(db *sql.DB) ([]string, error) {
 		{"item_daily", "sales", "INT DEFAULT 0"},
 		{"item_daily", "largest_sale", "INT DEFAULT 0"},
 		{"item", "tooltip", "TEXT"},
+		{"auction", "front", "INT"},
 	}
 	for _, a := range add {
 		var n int
@@ -589,6 +733,10 @@ func migrate(db *sql.DB) ([]string, error) {
 			}
 			added = append(added, a.table+"."+a.column)
 		}
+	}
+	// Indexes on added columns: here, since schema.sql runs before the columns exist.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS auction_front ON auction (house_id, first_seen) WHERE front=1`); err != nil {
+		return nil, err
 	}
 	return added, nil
 }

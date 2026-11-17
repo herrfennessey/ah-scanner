@@ -41,6 +41,8 @@ Reports (common flags: -house horde|blackwater, -days N, -min-sold N, -csv, -lim
   ahc movers             what sells reliably
   ahc deals              what is listed below its fair price right now
   ahc item <item>        daily history of one item
+  ahc backtest           replay the flip planner over the last -days (default 3) and score each
+                         flip by what sold afterwards, per trading style (-gold G, -every 1h, -csv)
 
 <item> is an item ID or (part of) its name. Config: -config path (default $AHC_CONFIG or /config.yaml).
 `
@@ -70,6 +72,8 @@ type flags struct {
 	minSold, minDisc       float64
 	csv, all, volatile     bool
 	out                    string
+	gold                   float64
+	every                  time.Duration
 }
 
 func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*flags, []string, error) {
@@ -89,6 +93,8 @@ func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*fl
 	f.fs.BoolVar(&f.all, "all", false, "probe: every house in the index, not just configured ones")
 	f.fs.BoolVar(&f.volatile, "include-volatile", false, "deals: include volatile items")
 	f.fs.StringVar(&f.out, "out", "", "replay: path of the database to build")
+	f.fs.Float64Var(&f.gold, "gold", 40, "backtest: the player's gold")
+	f.fs.DurationVar(&f.every, "every", time.Hour, "backtest: plan at most once per this")
 	// Allow flags after positional args: ahc sell "Heavy Quiver" -house blackwater
 	var pos []string
 	rest := args
@@ -110,7 +116,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 		// First, so a build that fails on config or the database still says which it was.
 		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Info("ahc starting", "version", version.String(), "cmd", cmd)
 	}
-	defaults := map[string][2]float64{"movers": {7, 20}, "deals": {7, 5}, "item": {14, 0}, "sell": {14, 0}, "rollup": {3, 0}}
+	defaults := map[string][2]float64{"backtest": {3, 0}, "movers": {7, 20}, "deals": {7, 5}, "item": {14, 0}, "sell": {14, 0}, "rollup": {3, 0}}
 	d := defaults[cmd]
 	if d[0] == 0 {
 		d[0] = 7
@@ -194,18 +200,12 @@ func run(ctx context.Context, cmd string, args []string) error {
 			addr = ":4653"
 		}
 		return (&web.Server{Cfg: cfg, Store: st, Log: log}).ListenAndServe(ctx, addr)
+	case "backtest":
+		return runBacktest(ctx, cfg, st, f)
 	case "rollup":
 		// Days older than the detail retention would be rebuilt from pruned auctions and thinned
 		// snapshots, overwriting good item_daily rows (which are kept forever) with undercounts.
-		days := f.days
-		for _, keep := range []int{cfg.AuctionRetentionDays, cfg.SnapshotFullDays} {
-			if keep > 0 && days > keep-1 {
-				days = keep - 1
-			}
-		}
-		if days < 1 {
-			days = 1
-		}
+		days := cfg.RollupDays(f.days)
 		if days != f.days {
 			fmt.Fprintf(os.Stderr, "ahc: rolling up %d days, not %d: older detail has been pruned by retention\n", days, f.days)
 		}

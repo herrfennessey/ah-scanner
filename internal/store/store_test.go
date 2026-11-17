@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -232,5 +233,74 @@ func TestMissingTooltips(t *testing.T) {
 	got, err := st.MissingTooltips(ctx, []int64{1, 2, 3})
 	if err != nil || !reflect.DeepEqual(got, []int64{2, 3}) {
 		t.Fatalf("%v %v", got, err)
+	}
+}
+
+func TestFrontMarksTheCheapestWhenPosted(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	t0 := time.Now().Add(-2 * time.Hour).Unix()
+	l := func(id, item, price int64) listing.Listing {
+		return listing.Listing{AuctionID: id, ItemID: item, Quantity: 5, UnitPrice: price, TimeLeft: listing.Long}
+	}
+	// Scan 1: 100 is cheapest of item 7, 300 of item 8. Scan 2: 90 undercuts, 120 doesn't.
+	scans := [][]listing.Listing{{l(1, 7, 100), l(2, 7, 150), l(3, 8, 300)}, {l(1, 7, 100), l(2, 7, 150), l(3, 8, 300), l(4, 7, 90), l(5, 7, 120)}}
+	for i, cur := range scans {
+		sn := Snapshot{HouseID: 1, Kind: listing.Commodity, FetchedAt: t0 + int64(i)*3600, SHA256: fmt.Sprint(i)}
+		if _, err := st.ApplySnapshot(ctx, sn, cur); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[int64]bool{}
+	rows, err := st.DB.Query(`SELECT auction_id, front FROM auction ORDER BY auction_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		var f bool
+		rows.Scan(&id, &f)
+		got[id] = f
+	}
+	rows.Close()
+	want := map[int64]bool{1: true, 2: false, 3: true, 4: true, 5: false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("front %v, want %v", got, want)
+	}
+	// Recorded before front existed: the backfill finds the same answer from the item stats.
+	st.DB.Exec(`UPDATE auction SET front=NULL`)
+	n, err := st.BackfillFront(ctx, 0)
+	if err != nil || n != 5 {
+		t.Fatalf("backfilled %d (%v)", n, err)
+	}
+	for id, w := range want {
+		var f bool
+		st.DB.QueryRow(`SELECT front FROM auction WHERE auction_id=?`, id).Scan(&f)
+		if f != w {
+			t.Fatalf("backfill: auction %d front %v, want %v", id, f, w)
+		}
+	}
+}
+
+func TestReclassifyGearSales(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	// 1: sold while the cheaper 2, up since before, stayed: a cancel. 3: sold as the cheapest.
+	// 4: sold before the window: untouched.
+	st.DB.Exec(`INSERT INTO auction (house_id, kind, auction_id, item_id, variant, unit_price, first_seen, last_seen, closed_at, outcome) VALUES
+		(1,'gear',1,9,'',300,?,?,?, 'sold'), (1,'gear',2,9,'',250,?,?,NULL,NULL), (1,'gear',3,9,'',200,?,?,?,'sold'),
+		(1,'gear',4,9,'',400,?,?,?,'sold')`,
+		now-7200, now-3600, now, now-7200, now, now-7200, now-3600, now-1800, now-30*86400, now-30*86400, now-29*86400)
+	n, err := st.ReclassifyGearSales(ctx, now-86400)
+	if err != nil || n != 1 {
+		t.Fatalf("changed %d (%v)", n, err)
+	}
+	for id, want := range map[int64]string{1: "cancelled", 3: "sold", 4: "sold"} {
+		var got string
+		st.DB.QueryRow(`SELECT outcome FROM auction WHERE auction_id=?`, id).Scan(&got)
+		if got != want {
+			t.Fatalf("auction %d: %s, want %s", id, got, want)
+		}
 	}
 }

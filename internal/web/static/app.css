@@ -221,6 +221,18 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 .chart .minline { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 4 3; }
 .chart .bar { fill: rgba(216, 178, 92, .22); }
 .chart .cross { stroke: var(--gold-deep); }
+.chart.book-plot { height: 260px; }
+.chart .bk-listed { fill: rgba(216, 178, 92, .62); }
+.chart .bk-sold { fill: var(--muted); opacity: .55; }
+.chart .bk-axis { stroke: var(--line); }
+.chart .bk-fair { stroke: var(--gold-hi); stroke-width: 1.4; stroke-dasharray: 5 4; }
+.chart .bk-paid { stroke: var(--text, #e9e2d0); stroke-width: 1.4; }
+.chart .bk-ref-lbl { fill: var(--muted); font-size: 10.5px; paint-order: stroke; stroke: var(--bg-raise); stroke-width: 4px; stroke-linejoin: round; }
+.chart .bk-hover { fill: var(--gold-deep); opacity: .18; }
+.legend .l-listed::before { height: 9px; border: 0; background: rgba(216, 178, 92, .62); width: 9px; }
+.legend .l-sold::before { height: 9px; border: 0; background: var(--muted); opacity: .55; width: 9px; }
+.legend .l-fair::before { border-top: 2px dashed var(--gold-hi); }
+.legend .l-paid::before { border-top: 2px solid var(--text, #e9e2d0); }
 .legend { display: flex; gap: 18px; font-size: 13px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
 .legend span::before { content: ""; display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--gold-hi); margin-right: 6px; vertical-align: middle; }
 .legend .l-min::before { border-top: 2px dashed var(--muted); }
