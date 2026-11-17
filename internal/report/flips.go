@@ -479,7 +479,7 @@ type styleProfile struct {
 }
 
 var styleProfiles = map[Style]styleProfile{
-	StyleActive: {Plays: []Play{PlayHold, PlayCheckIn, PlayCamp}, MaxShare: 0.5, MinROI: 0.15, SellBlackwater: true},
+	StyleActive: {Plays: []Play{PlayHold, PlayCheckIn, PlayCamp}, MaxShare: 0.5, MinROI: 0.2, SellBlackwater: true},
 	StyleCasual: {Plays: []Play{PlayHold, PlayCheckIn}, MaxShare: 0.4, MinROI: 0.2, SellBlackwater: true},
 	StyleAway:   {Plays: []Play{PlayHold}, MaxShare: 0.3, MinROI: 0.25},
 }
@@ -745,6 +745,9 @@ const (
 	// fallbackUndercut: chance a fresh cheapest listing is undercut within a round, when a
 	// house has no measurements at all (a busy AH undercuts most listings within hours).
 	fallbackUndercut = 0.5
+	// campDelivered: share of its expected profit a camp delivered in the backtest (79%, over
+	// 516 trades, 2026-11-14 to 17).
+	campDelivered = 0.8
 )
 
 // marketCeiling is the most a resale can ask: the market value, but never more than buyers
@@ -1014,6 +1017,12 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	going = min(going, int64(float64(sellAt)*math.Pow(undercutRatio, math.Max(1, under*float64(rounds)))))
 	leftover := int64(math.Round(float64(going) * (1 - sell.Cut) * float64(units)))
 	expected, visits, soldOut := expectedProfit(gross, cost, depositAtRisk, chance, under, expire, rounds, leftover)
+	// Camping delivered about 80% of what this model promised in the backtest (holds ~99%):
+	// hourly relists in a busy market cost more than the measured odds show. So a camp must
+	// promise 25% more than the other plays to be picked.
+	if o.play == PlayCamp {
+		expected = int64(float64(expected) * campDelivered)
+	}
 	// The deposit comes back on a sale, but profit_if_sold is quoted with one lost: the
 	// expected profit is never more than that.
 	expected = min(expected, profit)

@@ -764,7 +764,7 @@ function renderFlips() {
           <li><b>Priced from what buyers pay.</b> The resale is capped at the median price paid over the last 24 hours, and needs at least 2 purchases at or above it in the last 12 hours. What you buy, plus everything listed within 10% of your price, must sell within a day (12 hours for camping).</li>
           <li><b>Sliding or swinging prices</b> (asking price down over 10% a day, or a resale more than 15% under market value) are left to camping.</li>
           <li><b>Profit</b> is expected profit: weighed by how often this item's cheapest listings sold, and were undercut, within one round of the play. A relist costs the deposit and about 3%; stock left unsold is valued at what buyers pay then. Hover it for the chance it all sells.</li>
-          <li>Ranked by profit. One flip uses at most 50%, 40% or 30% of your gold (active, casual, away) and needs a 15%, 20% or 25% return after the cut (5% Horde, 15% Neutral). Away sells on Horde only.</li>
+          <li>Ranked by profit. One flip uses at most 50%, 40% or 30% of your gold (active, casual, away) and needs a 20%, 20% or 25% return after the cut (5% Horde, 15% Neutral). Away sells on Horde only.</li>
           <li>Neutral resale is never above the dearer of the Horde and Alliance prices. Horde → Neutral flips sell to Alliance players, only for items they buy often.</li>
           <li><b>Going fast:</b> about half of underpriced listings are gone within an hour of a scan. Buy soon after a scan or skip it.</li>
           <li>Gear only counts as sold if no cheaper copy outlasted it (it may have been cancelled). Anything listed and bought within the hour is never seen.</li>

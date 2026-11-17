@@ -33,12 +33,13 @@ for the first visit; it shrinks as the listing runs down.
 
 | Style | Visits | Plays | Gold per flip | Min return | Sells on |
 |-------|--------|-------|---------------|------------|----------|
-| active | about hourly | hold, check in, camp | 50% | 15% | Horde, Neutral |
+| active | about hourly | hold, check in, camp | 50% | 20% | Horde, Neutral |
 | casual (default) | 4–5 times a day | hold, check in | 40% | 20% | Horde, Neutral |
 | away | once or twice a day | hold | 30% | 25% | Horde only |
 
 Each item is planned with every play the style allows and the one with the most expected profit
-is kept, so active always sees at least what casual does, and casual what away does (a test
+is kept (a camp's counted at 80%: that's what camping delivered in the backtest, against ~99% for
+holds), so active always sees at least what casual does, and casual what away does (a test
 checks this over random markets). Old names still work: `regular` and the risk levels
 `high`/`medium`/`low` map to active, casual and away.
 
