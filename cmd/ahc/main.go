@@ -31,7 +31,8 @@ Collecting:
   ahc once               run one collection cycle and today's rollup, then exit
   ahc probe [-all]       fetch the house index and raw samples, print the fields seen (writes no tables)
   ahc rollup [-days N]   recompute daily rows for the last N days (default 3)
-  ahc serve              web UI only (reads the database the collector writes)
+  ahc serve [-rebuild]   web UI only (reads the database the collector writes); -rebuild first
+                         recomputes the flips from it, for a local copy with no collector
   ahc health             exit 1 if the collector is stale or failing (Docker healthcheck)
   ahc version            print the build version
   ahc replay -out x.db   rebuild a database from the raw bodies (last 48 h) with the current rules
@@ -76,6 +77,7 @@ type flags struct {
 	gold                   float64
 	every                  time.Duration
 	queue                  float64
+	rebuild                bool
 }
 
 func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*flags, []string, error) {
@@ -97,6 +99,7 @@ func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*fl
 	f.fs.StringVar(&f.out, "out", "", "replay: path of the database to build")
 	f.fs.Float64Var(&f.gold, "gold", 40, "backtest: the player's gold")
 	f.fs.DurationVar(&f.every, "every", time.Hour, "backtest: plan at most once per this")
+	f.fs.BoolVar(&f.rebuild, "rebuild", false, "serve: rebuild the flips from this database first (for a copy, with no collector running)")
 	f.fs.Float64Var(&f.queue, "queue", 1, "backtest: scale the check-in relist queue (under 1 relists sooner)")
 	// Allow flags after positional args: ahc sell "Heavy Quiver" -house blackwater
 	var pos []string
@@ -198,6 +201,15 @@ func run(ctx context.Context, cmd string, args []string) error {
 		}
 		return err
 	case "serve":
+		if f.rebuild {
+			start := time.Now()
+			in, err := report.RebuildFlipCache(ctx, st, cfg.DepositRate)
+			if err != nil {
+				return fmt.Errorf("rebuild flips: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "ahc: rebuilt the flips for %d items as of the scan at %s (%s)\n", len(in.Items),
+				time.Unix(in.ComputedAt, 0).Format("2006-01-02 15:04"), time.Since(start).Round(time.Second))
+		}
 		addr := cfg.Listen
 		if addr == "" {
 			addr = ":4653"

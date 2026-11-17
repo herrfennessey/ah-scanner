@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -99,6 +100,45 @@ func (in *FlipInputs) Confidence() string {
 const bookLevels = 40
 
 // BuildFlipInputs reads current order books and 7 days of daily rows for every house.
+// CachedHouses reads the houses from the stored flip inputs: the collector resolved them, so a
+// copied database brings them along.
+func CachedHouses(ctx context.Context, st *store.Store) ([]FlipHouse, error) {
+	_, b, err := st.LoadFlipCache(ctx)
+	if err != nil || b == nil {
+		return nil, fmt.Errorf("no flip cache to take the houses from (run the collector once): %v", err)
+	}
+	var in FlipInputs
+	if err := json.Unmarshal(b, &in); err != nil {
+		return nil, err
+	}
+	return in.Houses, nil
+}
+
+// RebuildFlipCache recomputes the stored flip inputs from the database as of its newest scan,
+// for the houses already in the cache: what the collector does after each scan, for a copy of
+// the database with no collector running (ahc serve -rebuild).
+func RebuildFlipCache(ctx context.Context, st *store.Store, depositRate float64) (*FlipInputs, error) {
+	houses, err := CachedHouses(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	var last sql.NullInt64
+	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&last); err != nil {
+		return nil, err
+	} else if !last.Valid {
+		return nil, fmt.Errorf("no scans")
+	}
+	in, err := BuildFlipInputs(ctx, st, houses, depositRate, time.Unix(last.Int64, 0))
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	return in, st.SaveFlipCache(ctx, in.ComputedAt, b)
+}
+
 func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, now time.Time) (*FlipInputs, error) {
 	return buildFlipInputs(ctx, st, houses, depositRate, now, false)
 }

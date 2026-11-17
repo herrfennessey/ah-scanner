@@ -15,7 +15,6 @@ package backtest
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -77,7 +76,7 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 		o.Styles = report.Styles
 	}
 	if len(o.Houses) == 0 {
-		h, err := cachedHouses(ctx, st)
+		h, err := report.CachedHouses(ctx, st)
 		if err != nil {
 			return nil, err
 		}
@@ -276,19 +275,6 @@ func (c *consumed) take(in *report.FlipInputs, f report.Flip, t int64) bool {
 		c.m[x.k] = append(c.m[x.k], buy{x.n, t})
 	}
 	return true
-}
-
-// cachedHouses reads the houses from the stored flip inputs.
-func cachedHouses(ctx context.Context, st *store.Store) ([]report.FlipHouse, error) {
-	_, b, err := st.LoadFlipCache(ctx)
-	if err != nil || b == nil {
-		return nil, fmt.Errorf("no flip cache to take the houses from (run the collector once): %v", err)
-	}
-	var in report.FlipInputs
-	if err := json.Unmarshal(b, &in); err != nil {
-		return nil, err
-	}
-	return in.Houses, nil
 }
 
 // planTimes are the scan times in [from, to], at least every apart.

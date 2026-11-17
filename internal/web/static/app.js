@@ -714,20 +714,19 @@ const toGold = (pos) => Math.round(GOLD_MIN * Math.pow(GOLD_MAX / GOLD_MIN, pos 
 const toPos = (gold) => Math.round(1000 * Math.log(gold / GOLD_MIN) / Math.log(GOLD_MAX / GOLD_MIN));
 // Mirrors styleProfiles in internal/report/flips.go.
 const STYLE = {
-  active: { label: "Active", share: 0.5, note: "You check about every hour. Everything casual and away get, plus camping: relisting whenever you're undercut, and busy or sliding markets." },
-  casual: { label: "Casual", share: 0.4, note: "You check 4–5 times a day. Holds, plus check-ins: relist only when the queue cheaper than yours is too long to clear in time." },
-  away: { label: "Away", share: 0.3, note: "You come back once or twice a day (morning, then evening). Holds only: post 24h listings and leave them. Horde only, steady markets only." },
+  active: { label: "Active", share: 0.5, note: "About hourly · hold, check in, camp" },
+  casual: { label: "Casual", share: 0.4, note: "4–5 times a day · hold, check in" },
+  away: { label: "Away", share: 0.3, note: "Once or twice a day · hold" },
 };
 // Older names, kept in the browser, map to the nearest style.
 const OLD_STYLE = { high: "active", medium: "casual", low: "away", regular: "casual" };
 // Mirrors playProfiles: what to do with the listing once it's up.
 const PLAY = {
-  hold: ["Hold", (f) => `Post ${f.list_hours}h and leave it, even if you're undercut: buyers take the cheaper ones first, then yours.`],
-  check_in: ["Check in", (f) => `Post ${f.list_hours}h, look again every ~${f.check_hours}h. ${f.relist_queue
-    ? `Relist just under the cheapest only if more than ${count(f.relist_queue)} are listed cheaper than yours (buyers take about ${count(Math.round(f.demand_per_day))} a day; fewer get through before your listing runs out as the hours pass).`
-    : "Relist just under the cheapest whenever you're undercut: buyers won't get through a queue before yours runs out."}`],
-  camp: ["Camp", (f) => `Post ${f.list_hours}h, check about every hour, and relist just under the cheapest whenever you're undercut.`],
+  hold: ["Hold", "Leave it up, even when undercut."],
+  check_in: ["Check in", "Look every few hours; relist under the cheapest when more than this many are listed cheaper than yours."],
+  camp: ["Camp", "Check hourly; relist under the cheapest whenever undercut."],
 };
+const cancelIf = (f) => f.play === "hold" ? "—" : f.play === "check_in" && f.relist_queue ? count(f.relist_queue) : "undercut";
 
 function renderFlips() {
   const gold = Math.min(GOLD_MAX, Math.max(GOLD_MIN, store.get("gold", 40)));
@@ -739,7 +738,7 @@ function renderFlips() {
       <div class="flips-head">
         <div>
           <h2 class="panel-title">Flips</h2>
-          <p class="flips-lede">Small trades for the gold you have and how often you're at the auction house. Updates itself after every scan; expected profit allows for undercuts, lost deposits and stock that doesn't sell.</p>
+          <p class="flips-lede">Trades for your gold and how often you play. Updates after every scan.</p>
         </div>
         <div class="gold-control">
           <label for="gold-num">Your gold</label>
@@ -888,19 +887,17 @@ async function loadFlips(gold, style, fromScan = false) {
     return;
   }
   out.innerHTML = `<div class="scroll-x"><table class="mini flips">
-    <thead><tr><th>Item</th><th>Buy</th><th>Cost</th><th>Sell</th><th>Expected profit</th><th>Sold out in</th></tr></thead>
+    <thead><tr><th>Item</th><th>Buy</th><th>List at</th><th>Profit</th><th>Play</th><th title="Units listed cheaper than yours">Cancel if position &gt;</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr class="${isNew(f) ? "is-new" : ""}">
       <td><span class="kind kind-${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || esc(f.kind)}</span>${
         isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
         f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}
-        <a class="adv-item" href="#/item/${f.item_id}">${esc(f.name)}</a><span class="sub-num why">${esc(f.why)}</span>${
-        PLAY[f.play] ? `<span class="play"><span class="play-name play-${f.play}">${PLAY[f.play][0]}</span> ${esc(PLAY[f.play][1](f))}</span>` : ""}</td>
-      <td data-label="Buy">${count(f.buy_units)} on ${factionName(f.buy_house)}<span class="sub-num">up to ${plain(f.buy_up_to_price)} each</span></td>
-      <td data-label="Cost">${money(f.buy_cost)}<span class="sub-num">${pct(f.share_of_gold)} of your gold${f.deposit_at_risk ? ` · ${plain(f.deposit_at_risk)} deposit` : ""}</span></td>
-      <td data-label="Sell at">${money(f.sell_at)}<span class="sub-num">on ${factionName(f.sell_house)}, ${f.list_hours}h listing${f.alliance_price ? ` · Alliance pays ${plain(f.alliance_price)}` : ""}${
-        f.recent_price ? ` · buyers paid ${plain(f.recent_price)} lately` : ""}${f.recent_sales_above ? ` · ${f.recent_sales_above} bought at this price or more in 12 h` : ""}</span></td>
-      <td data-label="Expected profit" class="pos">${money(f.expected_profit)}<span class="sub-num">${pct(f.sell_chance)} chance it sells ${f.play === "hold" ? "within the listing" : "before your next visit"}${f.play !== "hold" && f.undercut_chance ? ` · ${pct(f.undercut_chance)} undercut by then` : ""} · ${pct(f.sold_out_chance)} it all sells in time · ${plain(f.profit_if_sold)} if it all sells · ${plain(f.profit_per_day)} a day</span></td>
-      <td data-label="Sold out in">${f.days_to_sell < 1 / 24 ? "under an hour" : f.days_to_sell < 1 ? `~${Math.max(1, Math.round(f.days_to_sell * 24))} h` : `${f.days_to_sell.toFixed(1)} days`}<span class="sub-num">${f.competing_units ? `${count(f.competing_units)} others listed near your price` : "no one else near your price"} · ${Math.round(f.sales_per_day)} sales a day</span></td></tr>`).join("")}</tbody>
+        <a class="adv-item" href="#/item/${f.item_id}" title="${esc(f.why)}">${esc(f.name)}</a></td>
+      <td data-label="Buy">${count(f.buy_units)} × ≤ ${plain(f.buy_up_to_price)}<span class="sub-num">${factionName(f.buy_house)} · ${plain(f.buy_cost)}</span></td>
+      <td data-label="List at">${money(f.sell_at)}<span class="sub-num">${factionName(f.sell_house)} · ${f.list_hours}h</span></td>
+      <td data-label="Profit" class="pos" title="${pct(f.sold_out_chance)} chance it all sells · ${plain(f.profit_if_sold)} if it does">${money(f.expected_profit)}</td>
+      <td data-label="Play"><span class="play-name play-${esc(f.play)}" title="${esc(PLAY[f.play]?.[1] || "")}">${PLAY[f.play]?.[0] || esc(f.play)}</span></td>
+      <td data-label="Cancel if position >" class="num">${cancelIf(f)}</td></tr>`).join("")}</tbody>
   </table></div>${updated}`;
 }
 
