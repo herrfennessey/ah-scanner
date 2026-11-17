@@ -210,6 +210,14 @@ function renderHouses() {
     <div><dt>Items</dt><dd>${count(h.items)}</dd></div>
     <div><dt>Last scan</dt><dd><span class="dot ${fresh ? "" : "warn"}"></span>${ago(h.last_scan)}</dd></div>` : "";
 }
+// A link that belongs to one house (Supply's, priced at Horde) selects it before the hash changes,
+// so the item page opens on the prices the link was shown with.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest?.("a[data-house-link]");
+  const f = a?.dataset.houseLink;
+  if (!f || f === state.house || !state.houses.some((h) => h.faction === f && !h.view_only)) return;
+  state.house = f; store.set("house", f); renderHouses();
+});
 $("#houses").addEventListener("click", (e) => {
   const b = e.target.closest("[data-house]");
   if (!b) return;
@@ -917,9 +925,13 @@ const perRep = (v) => {
   const c = Math.round(Math.abs(v)), amount = c ? plain(c) : "<1c";
   return v < 0 ? `earns ${amount}` : amount;
 };
+// Supply is priced at Horde, so its item links open the item page on Horde (see data-house-link).
+function supplyLink(id, name, cls = "") {
+  return `<a class="item-link ${cls}" href="#/item/${id}" data-house-link="horde">${esc(name)}</a>`;
+}
 function supplyItem(items, id, extra = "") {
   const it = items[id] || { name: `Item #${id}`, quality: 1 };
-  return `<div class="item-cell">${icon({ id, ...it })}<div><div class="item-name q${it.quality}">${esc(it.name)}</div>${extra}</div></div>`;
+  return `<div class="item-cell">${icon({ id, ...it })}<div>${supplyLink(id, it.name, `item-name q${it.quality}`)}${extra}</div></div>`;
 }
 function inScope(w, scope) {
   if (scope === "world") return true;
@@ -954,9 +966,9 @@ async function renderSupply() {
     return `<tr class="${ranked ? "" : "muted-row"}">
       <td>${supplyItem(items, c.id, c.note ? `<span class="sub-num">${esc(c.note)}</span>` : "")}</td>
       <td data-label="Favor">${c.favor || "?"}</td>
-      <td data-label="Cheapest fill">${c.best ? `${count(c.best.qty)} × ${esc(items[c.best.item_id]?.name || c.best.name)}<span class="sub-num">${money(c.best.cost)}</span>` : "—"}${
+      <td data-label="Cheapest fill">${c.best ? `${count(c.best.qty)} × ${supplyLink(c.best.item_id, items[c.best.item_id]?.name || c.best.name)}<span class="sub-num">${money(c.best.cost)}</span>` : "—"}${
         alts.length ? `<details class="alts"><summary>${alts.length} other fill${alts.length > 1 ? "s" : ""}</summary>${alts.map((o) =>
-          `<div>${count(o.qty)} × ${esc(o.name)}: ${o.ok ? money(o.cost) : `<span class="none">not enough listed</span>`}</div>`).join("")}</details>` : ""}</td>
+          `<div>${count(o.qty)} × ${supplyLink(o.item_id, o.name)}:${o.ok ? money(o.cost) : `<span class="none">not enough listed</span>`}</div>`).join("")}</details>` : ""}</td>
       <td data-label="Empty crate">${money(c.crate_cost)}</td>
       <td data-label="Total">${money(c.total)}</td>
       <td data-label="Per Favor" class="${ranked ? "pos" : ""}">${ranked ? money(c.per_favor) : "—"}</td></tr>`;

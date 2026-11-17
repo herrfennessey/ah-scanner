@@ -431,6 +431,9 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 .supply-h:first-child { margin-top: 4px; }
 .supply-note { margin: 0 0 8px; }
 .supply td { vertical-align: top; white-space: normal; }
+.supply .item-link { text-decoration: none; }
+.supply .item-link:hover, .supply .item-link:focus-visible { text-decoration: underline; }
+.supply .item-name { display: block; }
 .supply .item-cell { display: flex; gap: 10px; align-items: flex-start; }
 .supply .item-cell .icon { width: 32px; height: 32px; }
 .muted-row td { opacity: .55; }
