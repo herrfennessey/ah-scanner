@@ -60,8 +60,8 @@ interval is never seen, so demand is, if anything, undercounted.
 
 The Flips page updates itself after every scan: new flips get a badge, a toast appears and the
 tab title shows the count. **Going fast** marks the listings most likely to be gone within the
-hour; about half of all underpriced listings are. Flips are ranked by expected profit per day
-your gold is tied up. On Blackwater, resale is never above the dearer of the Horde and Alliance
+hour; about half of all underpriced listings are. Flips are ranked by expected profit (the
+chance it sells, relists and leftover stock already weighed in). On Blackwater, resale is never above the dearer of the Horde and Alliance
 prices (every Blackwater buyer can buy at home instead).
 
 `ahc backtest -days 4` replays the planner at every past scan, with the inputs as they were then,

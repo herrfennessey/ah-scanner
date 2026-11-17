@@ -198,7 +198,7 @@ func TestCompetitionShrinksTheBuy(t *testing.T) {
 	}
 }
 
-func TestRankedByProfitPerDay(t *testing.T) {
+func TestRankedByExpectedProfit(t *testing.T) {
 	fast := FlipItem{Item: 8, Name: "Fast", Houses: map[string]*FlipStat{
 		"blackwater": {Fair: 300, Min: 100, Book: []FlipLevel{{100, 50}}},
 		"horde": {Fair: 300, Min: 300, Sales: 500, SalesPerDay: 80, RobustPerDay: 2000,
@@ -209,11 +209,11 @@ func TestRankedByProfitPerDay(t *testing.T) {
 		"horde": {Fair: 30000, Min: 30000, Sales: 50, SalesPerDay: 6, RobustPerDay: 5,
 			Front: &FrontStat{N: 50, Sold: [4]float64{2, 10, 20, 30}}},
 	}}
-	// Active: Fast's cheapest listings nearly all sell within the hour, Slow's take most of a
-	// day, when they sell at all.
-	f := planRisk([]FlipItem{slow, fast}, 40, StyleActive)
-	if len(f) != 2 || f[0].Name != "Fast" || f[0].Profit >= f[1].Profit {
-		t.Fatalf("the quick small flip should rank first: %+v", f)
+	// Fast sells within the hour for a little; Slow takes most of a day for more. Gold sitting
+	// idle isn't the limit, so the bigger expected profit comes first.
+	f := planRisk([]FlipItem{fast, slow}, 40, StyleActive)
+	if len(f) != 2 || f[0].Name != "Slow" || f[0].Expected <= f[1].Expected || f[0].ProfitPerDay >= f[1].ProfitPerDay {
+		t.Fatalf("the bigger expected profit should rank first: %+v", f)
 	}
 }
 

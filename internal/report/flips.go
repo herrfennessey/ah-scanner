@@ -595,7 +595,7 @@ type Flip struct {
 	ShareOfGold   float64 `json:"share_of_gold"`
 	DaysToSell    float64 `json:"days_to_sell" jsonschema:"days until your units and the competing listings near your price have all sold, at the recent rate of purchases at or above your price"`
 	Competing     int64   `json:"competing_units" jsonschema:"units other sellers list within 10% of your price"`
-	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): the ranking key"`
+	ProfitPerDay  int64   `json:"profit_per_day" jsonschema:"expected profit divided by the expected holding time (at least an hour): breaks ties in the ranking"`
 	SalesPerDay   float64 `json:"sales_per_day" jsonschema:"separate sales per day in the market that absorbs the resale"`
 	RecentAbove   int64   `json:"recent_sales_above" jsonschema:"separate purchases at or above sell_at in the last 12 hours: proof buyers still pay it"`
 	Clearing      int64   `json:"recent_price,omitempty" jsonschema:"median price actually paid over the last 24 hours"`
@@ -680,12 +680,13 @@ func PlanFlips(in *FlipInputs, o FlipOptions) ([]Flip, map[string]*FlipFunnel, i
 			}
 		}
 	}
-	// Fast money first: gold earned per day the gold is tied up.
+	// Most gold first: expected profit already weighs in the chance it sells, the relists and
+	// stock left over. Gold tied up is not the limit, so speed only breaks ties.
 	sort.Slice(flips, func(i, j int) bool {
-		if flips[i].ProfitPerDay != flips[j].ProfitPerDay {
-			return flips[i].ProfitPerDay > flips[j].ProfitPerDay
+		if flips[i].Expected != flips[j].Expected {
+			return flips[i].Expected > flips[j].Expected
 		}
-		return flips[i].Expected > flips[j].Expected
+		return flips[i].ProfitPerDay > flips[j].ProfitPerDay
 	})
 	if o.Limit > 0 && len(flips) > o.Limit {
 		flips = flips[:o.Limit]
