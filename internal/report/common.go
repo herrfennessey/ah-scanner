@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"fmt"
+	"github.com/herrfennessey/ah-scanner/internal/suffix"
 	"io"
 	"strings"
 	"text/tabwriter"
@@ -142,10 +143,7 @@ func ItemLabel(names map[int64]string, k Key) string {
 	if name == "" {
 		name = fmt.Sprintf("#%d", k.Item)
 	}
-	if k.Variant != "" {
-		name += " [" + k.Variant + "]"
-	}
-	return name
+	return suffix.Label(name, k.Variant)
 }
 
 // Gold formats copper as 12g34s56c, dropping leading zero units.

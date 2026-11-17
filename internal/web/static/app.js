@@ -307,7 +307,7 @@ async function refreshList(append) {
 }
 function rowHTML(r) {
   const href = `#/item/${r.id}${r.variant ? `?variant=${encodeURIComponent(r.variant)}` : ""}`;
-  const sub = [r.ilvl ? `Item level <b>${r.ilvl}</b>` : "", r.req_level > 1 ? `Requires level <b>${r.req_level}</b>` : "", r.variant ? esc(r.variant) : ""].filter(Boolean).join(" · ");
+  const sub = [r.ilvl ? `Item level <b>${r.ilvl}</b>` : "", r.req_level > 1 ? `Requires level <b>${r.req_level}</b>` : "", r.variant && !r.suffix ? esc(r.variant) : ""].filter(Boolean).join(" · ");
   return `<tr tabindex="0" data-href="${href}">
     <td><div class="item-cell">${icon(r)}<div><div class="item-name q${r.quality}">${esc(r.name)}</div><div class="item-sub">${sub || esc(r.class)}</div></div></div></td>
     <td>${money(r.min)}</td>
@@ -365,7 +365,7 @@ async function renderItem(id, variant) {
     <a class="back" href="#/browse">← Back to the auction house</a>
     <section class="item-head qh${it.quality}">
       ${icon(it, true)}
-      <div><h2 class="q${it.quality}">${esc(it.name)}${it.variant ? ` <small class="item-sub">${esc(it.variant)}</small>` : ""}</h2><div class="meta">${sub.join("<span aria-hidden='true'>◆</span>")}</div></div>
+      <div><h2 class="q${it.quality}">${esc(it.name)}${it.variant && !it.suffix ? ` <small class="item-sub">${esc(it.variant)}</small>` : ""}</h2><div class="meta">${sub.join("<span aria-hidden='true'>◆</span>")}</div></div>
       <div class="best"><small>Lowest buyout · ${factionName(h.faction)}</small>${money(it.min, { zero: "Not listed" })}</div>
     </section>
     ${hint ? `<div class="hint-bar hint-${esc(it.hint.kind)}" role="note"><b>${hint.label}</b><span>${esc(hint.body)}</span></div>` : ""}
