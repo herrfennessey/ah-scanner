@@ -56,6 +56,10 @@ and scores each flip per style: the resale fills only from buyers who really pai
 price afterwards, unsold stock is relisted under the cheapest listing at each visit (never under
 cost) and valued at the floor when the window ends. `-csv` lists every trade.
 
+Each item page has a **price distribution**: units listed at each price above the axis, units
+bought over the last 48 hours below it, market value and the median paid marked, and the cost of
+buying everything up to any price on hover.
+
 **Supply** plans Durotar Supply and Logistics hand-ins at Horde prices:
 
 - **Crates for Merchant's Favor**, cheapest first: an empty Waylaid Crate plus its cheapest

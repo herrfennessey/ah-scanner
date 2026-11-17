@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -260,5 +261,29 @@ func TestItemHintWhenPriceStretched(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&out)
 	if h := out.Item.Hint; h == nil || h.Kind != "sell" || h.Ratio != 2 || !h.Piling {
 		t.Fatalf("%+v", out.Item)
+	}
+}
+
+func TestItemBookListsAndPurchases(t *testing.T) {
+	srv, st := fixture(t, "")
+	ctx := context.Background()
+	now := time.Now().Unix()
+	// Two scans: the 10s stack loses 3 units (a purchase), the 5s dump arrives.
+	// After the fixture's scans, with snapshot bodies of their own.
+	st.ApplySnapshot(ctx, store.Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: now - 600, SHA256: "book-a"},
+		[]listing.Listing{{AuctionID: 901, ItemID: 2449, Quantity: 10, UnitPrice: 1000, TimeLeft: listing.VeryLong}})
+	st.ApplySnapshot(ctx, store.Snapshot{HouseID: 113, Kind: listing.Commodity, FetchedAt: now, SHA256: "book-b"},
+		[]listing.Listing{{AuctionID: 901, ItemID: 2449, Quantity: 7, UnitPrice: 1000, TimeLeft: listing.VeryLong},
+			{AuctionID: 902, ItemID: 2449, Quantity: 4, UnitPrice: 500, TimeLeft: listing.Long}})
+	resp, err := http.Get(srv.URL + "/api/item/2449/book?house=horde")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out report.ItemBook
+	json.NewDecoder(resp.Body).Decode(&out)
+	want := []report.BookLevel{{P: 500, Q: 4, N: 1}, {P: 1000, Q: 7, N: 1}}
+	if !reflect.DeepEqual(out.Listed, want) || len(out.Sold) != 1 || out.Sold[0] != (report.BookLevel{P: 1000, Q: 3, N: 1}) || !out.Tracked {
+		t.Fatalf("%+v", out)
 	}
 }

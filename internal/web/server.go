@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/item/{id}", s.item)
 	mux.HandleFunc("GET /api/item/{id}/history", s.history)
 	mux.HandleFunc("GET /api/item/{id}/sell", s.sell)
+	mux.HandleFunc("GET /api/item/{id}/book", s.book)
 	mux.HandleFunc("GET /api/item/{id}/tooltip", s.tooltip)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/flips", s.apiFlips)
@@ -580,6 +581,26 @@ func (s *Server) sell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, a)
+}
+
+// book is the item's price distribution: open listings by price and recent purchases.
+func (s *Server) book(w http.ResponseWriter, r *http.Request) {
+	h, err := s.houseParam(r)
+	if err != nil {
+		fail(w, 404, err)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		fail(w, 400, err)
+		return
+	}
+	b, err := report.LoadItemBook(r.Context(), s.Store.DB, h.ID, id, r.URL.Query().Get("variant"), h.Tracked, time.Now().Unix())
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, b)
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {

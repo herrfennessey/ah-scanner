@@ -378,6 +378,12 @@ async function renderItem(id, variant) {
           <div class="chart" id="chart"></div>
           <div class="legend"><span>Market value (p20)</span><span class="l-min">Lowest buyout</span><span class="l-bar">Units listed</span></div>
         </section>
+        <section class="panel">
+          <h3 class="panel-title">Price distribution <span class="aside">listed now · bought in the last 48 h</span></h3>
+          <div class="chart book-plot" id="book"><div class="empty-state">Loading the order book…</div></div>
+          <div class="legend"><span class="l-listed">Units listed now</span><span class="l-sold">Units bought, last 48 h</span><span class="l-fair">Market value</span><span class="l-paid">Median paid, 24 h</span></div>
+          <p class="fine" id="book-note">Hover a price to see what buying everything up to it costs.</p>
+        </section>
         <section class="panel when" id="when"></section>
       </div>
       <div class="stack">
@@ -401,6 +407,8 @@ async function renderItem(id, variant) {
     </div>`;
   drawChart(hist.points);
   renderWhen(sell);
+  api(`/api/item/${id}/book?house=${state.house}${vq}`).then((b) => drawBook(b, it.fair))
+    .catch((err) => { const el = $("#book"); if (el) el.innerHTML = emptyState("No order book", esc(err.message)); });
   view.querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", async () => {
     state.range = b.dataset.range; store.set("range", state.range);
     view.querySelectorAll("[data-range]").forEach((x) => x.setAttribute("aria-pressed", x === b));
@@ -494,6 +502,84 @@ function drawChart(points) {
       <div class="row"><span>Units listed</span>${count(best.listed)}</div>`, e);
   });
   svg.addEventListener("mouseleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+}
+/* price distribution: units listed at each price above the axis, units bought below it, on one
+   unit scale. Prices are grouped in log steps so a dump at a tenth of the price and the wall
+   at market value share one chart. */
+function drawBook(b, fair) {
+  const el = $("#book");
+  if (!el) return;
+  const listed = b.listed || [], sold = b.sold || [];
+  if (!listed.length && !sold.length) { el.innerHTML = emptyState("Nothing listed", "No open listings and no recent purchases on this house."); return; }
+  // Range: cheapest price seen, up to the dearest sale or the 95th-percentile listed unit
+  // (and market value), so a single absurd listing doesn't squash the rest.
+  const total = listed.reduce((a, l) => a + l.q, 0);
+  let acc = 0, p95 = listed.length ? listed[listed.length - 1].p : 0;
+  for (const l of listed) { acc += l.q; if (acc >= total * 0.95) { p95 = l.p; break; } }
+  const prices = [...listed.map((l) => l.p), ...sold.map((l) => l.p)];
+  const lo = Math.min(...prices);
+  const hi = Math.max(lo * 1.2, p95, sold.length ? sold[sold.length - 1].p : 0, fair || 0, b.recent_price || 0) * 1.02;
+  const W = el.clientWidth, H = el.clientHeight, padL = 44, padR = 12, padT = 18, padB = 22;
+  const nBins = Math.max(12, Math.min(48, Math.floor((W - padL - padR) / 9)));
+  const lr = Math.log(hi / lo) || 1;
+  const binOf = (p) => Math.min(nBins - 1, Math.max(0, Math.floor((Math.log(p / lo) / lr) * nBins)));
+  const bins = Array.from({ length: nBins }, (_, i) => ({ from: lo * Math.exp((lr * i) / nBins), to: lo * Math.exp((lr * (i + 1)) / nBins), q: 0, n: 0, sq: 0, sn: 0 }));
+  let above = 0;
+  for (const l of listed) { if (l.p > hi) { above += l.q; continue; } const x = bins[binOf(l.p)]; x.q += l.q; x.n += l.n; }
+  for (const l of sold) { if (l.p > hi) continue; const x = bins[binOf(l.p)]; x.sq += l.q; x.sn += l.n; }
+  const maxQ = Math.max(1, ...bins.map((x) => Math.max(x.q, x.sq)));
+  const plotW = W - padL - padR, bw = plotW / nBins;
+  const showSold = b.tracked;
+  const mid = showSold ? padT + (H - padT - padB) * 0.6 : H - padB;
+  const upH = mid - padT, downH = H - padB - mid - 4;
+  const xOf = (p) => padL + (Math.log(p / lo) / lr) * plotW;
+  const up = (q) => (q / maxQ) * upH, down = (q) => (q / maxQ) * downH;
+  const bars = bins.map((x, i) => {
+    const x0 = padL + i * bw + 1, w = Math.max(1, bw - 2);
+    const u = x.q ? Math.max(2, up(x.q)) : 0, d = x.sq ? Math.max(2, down(x.sq)) : 0;
+    return (u ? `<rect class="bk-listed" x="${x0.toFixed(1)}" y="${(mid - u).toFixed(1)}" width="${w.toFixed(1)}" height="${u.toFixed(1)}" rx="2"/>` : "") +
+      (showSold && d ? `<rect class="bk-sold" x="${x0.toFixed(1)}" y="${(mid + 4).toFixed(1)}" width="${w.toFixed(1)}" height="${d.toFixed(1)}" rx="2"/>` : "");
+  }).join("");
+  const ref = (p, cls, label, anchorRight) => p && p >= lo && p <= hi ? `<line class="${cls}" x1="${xOf(p)}" x2="${xOf(p)}" y1="${padT - 4}" y2="${H - padB}"/>
+    <text class="bk-ref-lbl" x="${xOf(p) + (anchorRight ? -4 : 4)}" y="${padT + 6}" text-anchor="${anchorRight ? "end" : "start"}">${label} ${shortGold(p)}</text>` : "";
+  // Keep the two reference labels apart: the lower price's label points left.
+  const paid = b.recent_price, lowerIsFair = fair && paid ? fair < paid : true;
+  const ticks = [];
+  for (let i = 0; i <= 4; i++) {
+    const p = lo * Math.exp((lr * i) / 4);
+    ticks.push(`<text x="${padL + (plotW * i) / 4}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === 4 ? "end" : "middle"}">${shortGold(p)}</text>`);
+  }
+  const yl = `<text x="${padL - 8}" y="${padT + 4}" text-anchor="end">${count(maxQ)}</text>${showSold ? `<text x="${padL - 8}" y="${H - padB}" text-anchor="end">${count(maxQ)}</text>` : ""}<text x="${padL - 8}" y="${mid + 4}" text-anchor="end">0</text>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Units listed and bought by price">
+    <g class="axis">${ticks.join("")}${yl}</g>
+    <line class="bk-axis" x1="${padL}" x2="${W - padR}" y1="${mid}" y2="${mid}"/>
+    ${bars}
+    ${ref(fair, "bk-fair", "market", lowerIsFair)}${ref(paid, "bk-paid", "paid", !lowerIsFair)}
+    <rect class="bk-hover" id="bk-hover" y="${padT - 4}" height="${H - padB - padT + 4}" width="${bw}" visibility="hidden"/>
+  </svg>`;
+  $("#book-note").textContent = `${above ? `${count(above)} more listed above ${shortGold(hi)}, off the chart. ` : ""}${
+    showSold ? "Purchases are what the scans can see: gear counts only if no cheaper copy outlasted it." : "Sales aren't tracked on this house (price only)."} Hover a price to see what buying everything up to it costs.`;
+  const svg = el.querySelector("svg"), hov = $("#bk-hover");
+  const pick = (e) => {
+    const r = svg.getBoundingClientRect();
+    const mx = ((e.clientX - r.left) / r.width) * W;
+    const i = Math.floor((mx - padL) / bw);
+    if (i < 0 || i >= nBins) { hov.setAttribute("visibility", "hidden"); hideTip(); return; }
+    const x = bins[i];
+    // Buying every listing up to the end of this step, cheapest first.
+    let units = 0, cost = 0, next = 0;
+    for (const l of listed) {
+      if (l.p < x.to) { units += l.q; cost += l.q * l.p; } else { next = l.p; break; }
+    }
+    hov.setAttribute("x", padL + i * bw); hov.setAttribute("visibility", "visible");
+    showTip(`<b>${plain(Math.round(x.from))} – ${plain(Math.round(x.to))}</b>
+      <div class="row"><span>Listed here</span>${count(x.q)} in ${count(x.n)} auction${x.n === 1 ? "" : "s"}</div>
+      ${showSold ? `<div class="row"><span>Bought, 48 h</span>${count(x.sq)} in ${count(x.sn)} sale${x.sn === 1 ? "" : "s"}</div>` : ""}
+      <div class="row"><span>Buy all up to here</span>${count(units)} for ${plain(cost)}</div>
+      <div class="row"><span>Next listing then</span>${next ? plain(next) : "none"}</div>`, e);
+  };
+  svg.addEventListener("mousemove", pick);
+  svg.addEventListener("mouseleave", () => { hov.setAttribute("visibility", "hidden"); hideTip(); });
 }
 function shortGold(c) {
   const g = c / 10000;
