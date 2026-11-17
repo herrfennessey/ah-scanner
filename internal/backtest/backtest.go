@@ -306,37 +306,53 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, tr *Trade) error {
 		tr.queue = 1
 	}
 	end := t + int64(windowH*3600)
-	type sale struct {
-		ts, units, price int64
-		kind             string
-		id               int64
-	}
-	rows, err := db.QueryContext(ctx, `SELECT closed_at, qty_last, unit_price, kind, auction_id, 0 FROM auction
+	type sale struct{ ts, units, price int64 }
+	rows, err := db.QueryContext(ctx, `SELECT closed_at, qty_last, unit_price FROM auction
 			WHERE house_id=? AND item_id=? AND variant=? AND closed_at>? AND closed_at<=? AND outcome='sold'
 		UNION ALL
-		SELECT ts, units, unit_price, kind, auction_id, 1 FROM sale_event WHERE house_id=? AND item_id=? AND variant=? AND ts>? AND ts<=? AND outcome='partial'
+		SELECT ts, units, unit_price FROM sale_event WHERE house_id=? AND item_id=? AND variant=? AND ts>? AND ts<=? AND outcome='partial'
 		ORDER BY 1`, house, f.ItemID, f.Variant, t, end, house, f.ItemID, f.Variant, t, end)
 	if err != nil {
 		return err
 	}
 	var sales []sale
-	partials := map[[2]any][]sale{} // by auction: what open listings still had, for the queue
 	for rows.Next() {
 		var x sale
-		var partial bool
-		if err := rows.Scan(&x.ts, &x.units, &x.price, &x.kind, &x.id, &partial); err != nil {
+		if err := rows.Scan(&x.ts, &x.units, &x.price); err != nil {
 			rows.Close()
 			return err
 		}
 		sales = append(sales, x)
-		if partial {
-			k := [2]any{x.kind, x.id}
-			partials[k] = append(partials[k], x)
-		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	// Every partial sale after t, by auction, to rebuild what an open listing still had at a
+	// visit: its last count plus all it lost later, including after the window (a check-in only).
+	var partials map[[2]any][]sale
+	if f.Play == report.PlayCheckIn {
+		partials = map[[2]any][]sale{}
+		rows, err := db.QueryContext(ctx, `SELECT kind, auction_id, ts, units FROM sale_event
+			WHERE house_id=? AND item_id=? AND variant=? AND ts>? AND outcome='partial'`, house, f.ItemID, f.Variant, t)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var kind string
+			var id int64
+			var x sale
+			if err := rows.Scan(&kind, &id, &x.ts, &x.units); err != nil {
+				rows.Close()
+				return err
+			}
+			k := [2]any{kind, id}
+			partials[k] = append(partials[k], x)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 	}
 	// The listings the flip bought are still in the history (nobody really bought them): for a
 	// relist in the same house, leave out what was open at t up to the buy price, or they'd look

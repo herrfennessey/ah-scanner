@@ -93,6 +93,23 @@ func TestCheckInRelistsOnlyBehindALongQueue(t *testing.T) {
 	}
 }
 
+func TestCheckInQueueCountsSalesAfterTheWindow(t *testing.T) {
+	st, t0 := scenario(t)
+	// At the 5h visit the wall has 90 left. It's still open at the end of the history with 50,
+	// having sold 2 at hour 25, after this trade's 24-hour window: that sale must be added back
+	// too, or the queue looks like 88. Buyers taking 113 a day get through 89 in the 19 hours
+	// left, so 90 ahead means relist at that first visit: under the wall at 9.99s, its buyers
+	// take all 20 by hour 15. (Missing the late sale, it waits for the 10h visit.)
+	flip := report.Flip{ItemID: 7, BuyUnits: 20, BuyUpTo: 500, BuyCost: 10000, SellAt: 1200, DepositAtRisk: 100, Play: report.PlayCheckIn, Demand: 113}
+	tr := Trade{Flip: flip, cut: 0.05}
+	if err := fill(context.Background(), st.DB, 113, t0, &tr); err != nil {
+		t.Fatal(err)
+	}
+	if tr.Relists != 1 || tr.Sold != 20 || tr.Hours > 15 {
+		t.Fatalf("90 ahead with room for 89 should relist at 5h and sell out by 15h: %+v", tr)
+	}
+}
+
 func TestFillRelistsWhenTheListingRunsOut(t *testing.T) {
 	st, t0 := scenario(t)
 	// Camp: 8h listings and hourly visits over 12 hours, priced under everything (never
