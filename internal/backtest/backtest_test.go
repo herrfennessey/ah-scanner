@@ -66,3 +66,41 @@ func TestFillCountsBuyersAtOrAboveThePrice(t *testing.T) {
 		t.Fatalf("active: %+v", tr)
 	}
 }
+
+func TestFillStopsWhenTheListingRunsOut(t *testing.T) {
+	st, t0 := scenario(t)
+	// Regular: 8h listings, visits every 5h, a 24h window, priced under everything (never
+	// undercut). Up 0-8h, out until the 10h visit, up 10-18h, out until 20h, up 20-24h: the
+	// wall's 2 an hour count only while ours is up, and each lapse costs a relist.
+	tr := Trade{Flip: report.Flip{ItemID: 7, BuyUnits: 100, BuyUpTo: 500, BuyCost: 50000, SellAt: 700, DepositAtRisk: 100}, cut: 0.05}
+	if err := fill(context.Background(), st.DB, 113, t0, report.StyleRegular, &tr); err != nil {
+		t.Fatal(err)
+	}
+	if tr.Sold != 40 || tr.Relists != 2 {
+		t.Fatalf("sold %d with %d relists, want 40 and 2: %+v", tr.Sold, tr.Relists, tr)
+	}
+}
+
+func TestBoughtListingsAreNotBoughtAgain(t *testing.T) {
+	in := &report.FlipInputs{Items: []report.FlipItem{{Item: 7, Houses: map[string]*report.FlipStat{
+		"horde": {Min: 500, Listed: 15, Book: []report.FlipLevel{{P: 500, Q: 5}, {P: 900, Q: 10}}},
+	}}}}
+	f := report.Flip{ItemID: 7, BuyHouse: "horde", BuyUnits: 5, BuyUpTo: 500}
+	c := &consumed{}
+	if !c.take(in, f, 1000) {
+		t.Fatal("first purchase")
+	}
+	if c.take(in, f, 1000) {
+		t.Fatal("the same 5 can't be bought twice (another route, same time)")
+	}
+	// The next planning time sees the book without them, and the original is untouched.
+	got := c.apply(in).Items[0].Houses["horde"]
+	if len(got.Book) != 1 || got.Book[0].P != 900 || got.Min != 900 || got.Listed != 10 || in.Items[0].Houses["horde"].Min != 500 {
+		t.Fatalf("applied %+v", got)
+	}
+	// Two days on, units at that price are someone else's listings.
+	c.expire(1000 + consumedFor)
+	if !c.take(in, f, 1000+consumedFor) {
+		t.Fatal("after expiry")
+	}
+}

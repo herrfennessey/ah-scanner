@@ -61,7 +61,7 @@ func TestInputsCarryEvidenceAndRebuildThePast(t *testing.T) {
 
 	// Ten hours in: no dump yet, and the wall still held 40 (60 less 2 an hour, its later
 	// sales added back).
-	past, err := BuildFlipInputs(ctx, st, houses, 0.2, time.Unix(t0+10*3600, 0))
+	past, err := BuildFlipInputsAt(ctx, st, houses, 0.2, time.Unix(t0+10*3600, 0))
 	if err != nil {
 		t.Fatal(err)
 	}

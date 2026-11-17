@@ -99,18 +99,20 @@ func (in *FlipInputs) Confidence() string {
 const bookLevels = 40
 
 // BuildFlipInputs reads current order books and 7 days of daily rows for every house.
-//
-// With now before the latest scan it rebuilds the inputs as they were at now (for the
-// backtest): order books from when auctions appeared, sold down and closed, and today's sales
-// from the raw events up to now. Today's market value and volatility then come from the days
-// before, since today's daily row already holds what happened after now.
 func BuildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, now time.Time) (*FlipInputs, error) {
+	return buildFlipInputs(ctx, st, houses, depositRate, now, false)
+}
+
+// BuildFlipInputsAt rebuilds the inputs as they were at a past time (for the backtest): order
+// books from when auctions appeared, sold down and closed, and today's sales from the raw
+// events up to then. Today's market value and volatility come from the days before, since
+// today's daily row already holds what happened after.
+func BuildFlipInputsAt(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, at time.Time) (*FlipInputs, error) {
+	return buildFlipInputs(ctx, st, houses, depositRate, at, true)
+}
+
+func buildFlipInputs(ctx context.Context, st *store.Store, houses []FlipHouse, depositRate float64, now time.Time, past bool) (*FlipInputs, error) {
 	at := now.Unix()
-	var latest sql.NullInt64
-	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&latest); err != nil {
-		return nil, err
-	}
-	past := latest.Valid && at < latest.Int64
 	in := &FlipInputs{ComputedAt: at, Houses: houses, SpanDays: 7}
 	from := rollup.DayString(now.AddDate(0, 0, -6), rollup.Berlin)
 	today := rollup.DayString(now, rollup.Berlin)
@@ -362,20 +364,12 @@ func bookRows(ctx context.Context, db *sql.DB, house int64, want []Key, past boo
 		return db.QueryContext(ctx, `SELECT item_id, variant, unit_price, SUM(qty_last) FROM auction
 			WHERE house_id=? AND closed_at IS NULL AND unit_price > 0 GROUP BY item_id, variant, unit_price ORDER BY item_id, variant, unit_price`, house)
 	}
-	ids := make([]string, 0, len(want))
-	seen := map[int64]bool{}
-	for _, k := range want {
-		if !seen[k.Item] {
-			seen[k.Item] = true
-			ids = append(ids, fmt.Sprint(k.Item))
-		}
-	}
 	return db.QueryContext(ctx, `SELECT a.item_id, a.variant, a.unit_price, SUM(a.qty_last + COALESCE(p.u, 0)) FROM auction a
 		LEFT JOIN (SELECT kind, auction_id, SUM(units) u FROM sale_event WHERE house_id=? AND ts>? GROUP BY kind, auction_id) p
 			ON p.kind=a.kind AND p.auction_id=a.auction_id
 		WHERE a.house_id=? AND a.item_id IN (SELECT value FROM json_each(?)) AND a.first_seen<=? AND (a.closed_at IS NULL OR a.closed_at>?) AND a.unit_price>0
 		GROUP BY a.item_id, a.variant, a.unit_price ORDER BY a.item_id, a.variant, a.unit_price`,
-		house, t, house, "["+strings.Join(ids, ",")+"]", t, t)
+		house, t, house, idList(want), t, t)
 }
 
 // Style is how the player trades: how often they come back to the auction house to relist
@@ -913,10 +907,11 @@ func title(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// StyleTiming is a style's visit interval and window in hours, and its listing rounds.
-func StyleTiming(s Style) (checkHours, windowHours float64, rounds int) {
+// StyleTiming is a style's visit interval, window and listing duration in hours, and its
+// listing rounds.
+func StyleTiming(s Style) (checkHours, windowHours, listHours float64, rounds int) {
 	p := styleProfiles[ParseStyle(string(s))]
-	return p.CheckHours, p.WindowHours, p.rounds()
+	return p.CheckHours, p.WindowHours, p.ListHours, p.rounds()
 }
 
 // Styles lists the trading styles, most attentive first.

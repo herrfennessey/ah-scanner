@@ -78,12 +78,14 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 		o.Houses = h
 	}
 	var last sql.NullInt64
-	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&last); err != nil || !last.Valid {
-		return nil, fmt.Errorf("no scans: %v", err)
+	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&last); err != nil {
+		return nil, err
+	} else if !last.Valid {
+		return nil, fmt.Errorf("no scans")
 	}
 	longest := 0.0
-	for _, st := range o.Styles {
-		_, w, _ := report.StyleTiming(st)
+	for _, s := range o.Styles {
+		_, w, _, _ := report.StyleTiming(s)
 		longest = max(longest, w)
 	}
 	to := min(o.To.Unix(), last.Int64-int64(longest*3600))
@@ -98,17 +100,29 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 	}
 	var out []Trade
 	busy := map[string]int64{} // style|item|route → when its stock is gone (one position at a time)
+	// What each style has bought out of the recorded order books: those listings are still in
+	// the history, so later planning times (and other routes at the same time) must not buy
+	// them again.
+	bought := map[report.Style]*consumed{}
+	for _, r := range o.Styles {
+		bought[r] = &consumed{}
+	}
 	for _, t := range times {
-		in, err := report.BuildFlipInputs(ctx, st, o.Houses, o.DepositRate, time.Unix(t, 0))
+		in, err := report.BuildFlipInputsAt(ctx, st, o.Houses, o.DepositRate, time.Unix(t, 0))
 		if err != nil {
 			return nil, fmt.Errorf("inputs at %d: %w", t, err)
 		}
 		for _, r := range o.Styles {
-			flips, _, _ := report.PlanFlips(in, report.FlipOptions{Gold: o.Gold, Style: r})
+			c := bought[r]
+			c.expire(t)
+			flips, _, _ := report.PlanFlips(c.apply(in), report.FlipOptions{Gold: o.Gold, Style: r})
 			for _, f := range flips {
 				key := fmt.Sprint(r, "|", f.ItemID, "|", f.Variant, "|", f.BuyHouse, ">", f.SellHouse)
 				if busy[key] > t {
-					continue // already holding this one: the same cheap listings can't be bought twice
+					continue // already holding this one
+				}
+				if !c.take(in, f, t) {
+					continue // another route at this time already bought those listings
 				}
 				tr := Trade{At: t, Style: r, Flip: f, cut: cut[f.SellHouse]}
 				if err := fill(ctx, st.DB, ids[f.SellHouse], t, r, &tr); err != nil {
@@ -120,6 +134,139 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 		}
 	}
 	return out, nil
+}
+
+// consumedFor is how long a bought listing is assumed to stay in the recorded history: the
+// longest listing duration. After that, units at the same price are someone else's.
+const consumedFor = 48 * 3600
+
+type levelKey struct {
+	house   string
+	item    int64
+	variant string
+	price   int64
+}
+
+type buy struct {
+	units, at int64
+}
+
+// consumed tracks the units a style bought out of the recorded order books, by price level.
+type consumed struct{ m map[levelKey][]buy }
+
+func (c *consumed) expire(t int64) {
+	for k, v := range c.m {
+		keep := v[:0]
+		for _, b := range v {
+			if t-b.at < consumedFor {
+				keep = append(keep, b)
+			}
+		}
+		if len(keep) == 0 {
+			delete(c.m, k)
+		} else {
+			c.m[k] = keep
+		}
+	}
+}
+
+func (c *consumed) units(k levelKey) int64 {
+	var n int64
+	for _, b := range c.m[k] {
+		n += b.units
+	}
+	return n
+}
+
+// apply returns the inputs with the bought units taken out of the order books. Items without
+// purchases are shared, not copied.
+func (c *consumed) apply(in *report.FlipInputs) *report.FlipInputs {
+	if len(c.m) == 0 {
+		return in
+	}
+	touched := map[[2]any]bool{}
+	for k := range c.m {
+		touched[[2]any{k.item, k.variant}] = true
+	}
+	out := *in
+	out.Items = make([]report.FlipItem, len(in.Items))
+	for i, it := range in.Items {
+		out.Items[i] = it
+		if !touched[[2]any{it.Item, it.Variant}] {
+			continue
+		}
+		houses := make(map[string]*report.FlipStat, len(it.Houses))
+		for f, s := range it.Houses {
+			houses[f] = s
+			if s == nil || len(s.Book) == 0 {
+				continue
+			}
+			cp := *s
+			cp.Book = nil
+			var gone int64
+			for _, l := range s.Book {
+				q := l.Q - min(l.Q, c.units(levelKey{f, it.Item, it.Variant, l.P}))
+				gone += l.Q - q
+				if q > 0 {
+					cp.Book = append(cp.Book, report.FlipLevel{P: l.P, Q: q})
+				}
+			}
+			if gone == 0 {
+				continue
+			}
+			cp.Listed = max(0, cp.Listed-gone)
+			cp.Min = 0
+			if len(cp.Book) > 0 {
+				cp.Min = cp.Book[0].P
+			}
+			houses[f] = &cp
+		}
+		out.Items[i].Houses = houses
+	}
+	return &out
+}
+
+// take records a flip's purchase, cheapest first, from the recorded book less what was already
+// bought. It reports false (recording nothing) if those units are no longer there.
+func (c *consumed) take(in *report.FlipInputs, f report.Flip, t int64) bool {
+	var book []report.FlipLevel
+	for _, it := range in.Items {
+		if it.Item == f.ItemID && it.Variant == f.Variant {
+			if s := it.Houses[f.BuyHouse]; s != nil {
+				book = s.Book
+			}
+			break
+		}
+	}
+	need := f.BuyUnits
+	var takes []struct {
+		k levelKey
+		n int64
+	}
+	for _, l := range book {
+		if l.P > f.BuyUpTo || need == 0 {
+			break
+		}
+		k := levelKey{f.BuyHouse, f.ItemID, f.Variant, l.P}
+		n := min(need, l.Q-min(l.Q, c.units(k)))
+		if n > 0 {
+			takes = append(takes, struct {
+				k levelKey
+				n int64
+			}{k, n})
+			need -= n
+		}
+	}
+	if need > 0 {
+		return false
+	}
+	if c.m == nil {
+		c.m = map[levelKey][]buy{}
+	}
+	for _, x := range takes {
+		c.m[x.k] = append(c.m[x.k], buy{x.n, t})
+	}
+	return true
 }
 
 // cachedHouses reads the houses from the stored flip inputs.
@@ -155,11 +302,12 @@ func planTimes(ctx context.Context, db *sql.DB, from, to, every int64) ([]int64,
 	return out, rows.Err()
 }
 
-// fill plays the resale listing against the purchases made after it was posted, relisting at
-// each of the style's visits.
+// fill plays the resale listing against the purchases made after it was posted. At each of the
+// style's visits, stock still unsold is relisted (losing the deposit) if it was undercut or its
+// listing ran out; between a listing running out and the next visit, nothing of ours is up.
 func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, tr *Trade) error {
 	f := tr.Flip
-	checkH, windowH, rounds := report.StyleTiming(style)
+	checkH, windowH, listH, rounds := report.StyleTiming(style)
 	end := t + int64(windowH*3600)
 	type sale struct{ ts, units, price int64 }
 	rows, err := db.QueryContext(ctx, `SELECT closed_at, qty_last, unit_price FROM auction
@@ -185,9 +333,19 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 	}
 	floorAt := func(at int64) (int64, error) {
 		var p sql.NullInt64
-		err := db.QueryRowContext(ctx, `SELECT i.min_unit FROM item_snapshot i JOIN snapshot s ON s.id=i.snapshot_id
-			WHERE s.house_id=? AND i.item_id=? AND i.variant=? AND s.fetched_at<=? ORDER BY s.fetched_at DESC LIMIT 1`,
-			house, f.ItemID, f.Variant, at).Scan(&p)
+		var err error
+		if f.Kind == "relist" {
+			// The listings the flip bought are still in the history (nobody really bought them):
+			// leave out what was open at t up to the buy price, or they'd look like undercuts.
+			err = db.QueryRowContext(ctx, `SELECT MIN(unit_price) FROM auction
+				WHERE house_id=? AND item_id=? AND variant=? AND unit_price>0 AND first_seen<=? AND (closed_at IS NULL OR closed_at>?)
+					AND NOT (first_seen<=? AND unit_price<=? AND (closed_at IS NULL OR closed_at>?))`,
+				house, f.ItemID, f.Variant, at, at, t, f.BuyUpTo, t).Scan(&p)
+		} else {
+			err = db.QueryRowContext(ctx, `SELECT i.min_unit FROM item_snapshot i JOIN snapshot s ON s.id=i.snapshot_id
+				WHERE s.house_id=? AND i.item_id=? AND i.variant=? AND s.fetched_at<=? ORDER BY s.fetched_at DESC LIMIT 1`,
+				house, f.ItemID, f.Variant, at).Scan(&p)
+		}
 		if err != nil && err != sql.ErrNoRows {
 			return 0, err
 		}
@@ -196,6 +354,7 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 	price, gross, lost := f.SellAt, 0.0, 0.0
 	depositShare := func() float64 { return float64(f.DepositAtRisk) * float64(f.BuyUnits-tr.Sold) / float64(f.BuyUnits) }
 	lastTS := end
+	listed, life := t, int64(listH*3600)
 	i := 0
 	for k := 0; k < rounds && tr.Sold < f.BuyUnits; k++ {
 		roundEnd := t + int64(float64(k+1)*checkH*3600)
@@ -203,8 +362,8 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 			roundEnd = end
 		}
 		for ; i < len(sales) && sales[i].ts <= roundEnd && tr.Sold < f.BuyUnits; i++ {
-			if sales[i].price < price {
-				continue
+			if sales[i].price < price || sales[i].ts > listed+life {
+				continue // cheaper than ours, or ours had run out
 			}
 			take := min(sales[i].units, f.BuyUnits-tr.Sold)
 			tr.Sold += take
@@ -220,9 +379,13 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 			if err != nil {
 				return err
 			}
-			if fl > 0 && fl <= price {
+			undercut := fl > 0 && fl <= price
+			if undercut || roundEnd >= listed+life {
 				lost += depositShare()
-				price = max(fl-1, f.BuyUpTo)
+				if undercut {
+					price = max(fl-1, f.BuyUpTo)
+				}
+				listed = roundEnd
 				tr.Relists++
 			}
 		}
@@ -249,7 +412,7 @@ func fill(ctx context.Context, db *sql.DB, house, t int64, style report.Style, t
 	return nil
 }
 
-// Summarize totals the trades per risk level.
+// Summarize totals the trades per trading style.
 func Summarize(trades []Trade) []Summary {
 	by := map[report.Style]*Summary{}
 	units := map[report.Style][2]int64{}
