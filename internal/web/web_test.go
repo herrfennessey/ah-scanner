@@ -287,3 +287,38 @@ func TestItemBookListsAndPurchases(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+func TestItemListsSuffixVariants(t *testing.T) {
+	srv, st := fixture(t, "")
+	ctx := context.Background()
+	st.SetItem(ctx, store.Item{ID: 6595, Name: "Battleforge Gauntlets", Quality: 2})
+	l := []listing.Listing{
+		{AuctionID: 600, ItemID: 6595, Variant: "b12718", Quantity: 1, UnitPrice: 1300, TimeLeft: listing.Long},
+		{AuctionID: 601, ItemID: 6595, Variant: "b12725", Quantity: 1, UnitPrice: 900, TimeLeft: listing.Long},
+		{AuctionID: 602, ItemID: 6595, Variant: "b12725", Quantity: 1, UnitPrice: 1100, TimeLeft: listing.Long},
+		{AuctionID: 1, ItemID: 7069, Quantity: 4, UnitPrice: 2289, TimeLeft: listing.Long},
+	}
+	st.ApplySnapshot(ctx, store.Snapshot{HouseID: 113, Kind: listing.Gear, FetchedAt: time.Now().Unix(), SHA256: "g"}, l)
+
+	get := func(q string) (out struct {
+		Item     ItemRow      `json:"item"`
+		Variants []variantOut `json:"variants"`
+	}) {
+		resp, err := http.Get(srv.URL + "/api/item/6595?house=horde" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		json.NewDecoder(resp.Body).Decode(&out)
+		return out
+	}
+	// The plain item is never listed: the page needs the suffixes to link to, most listed first.
+	out := get("")
+	if len(out.Variants) != 2 || out.Variants[0].Suffix != "of the Boar" || out.Variants[0].Available != 2 || out.Variants[0].Min != 900 ||
+		out.Variants[1].Name != "Battleforge Gauntlets of the Eagle" {
+		t.Fatalf("variants %+v", out.Variants)
+	}
+	if out := get("&variant=b12718"); out.Item.Name != "Battleforge Gauntlets of the Eagle" || out.Item.Available != 1 {
+		t.Fatalf("item %+v", out.Item)
+	}
+}

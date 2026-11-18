@@ -263,6 +263,13 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 
 .house-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-raise); text-decoration: none; }
 .house-card + .house-card { margin-top: 8px; }
+.suffix-list { display: flex; flex-direction: column; }
+.suffix { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: var(--radius); text-decoration: none; color: inherit; }
+.suffix + .suffix { border-top: 1px solid var(--line); }
+.suffix:hover, .suffix.here { background: var(--bg-raise); }
+.suffix.here { box-shadow: inset 2px 0 0 var(--gold-deep); }
+.suffix .right { text-align: right; }
+.suffix small { display: block; color: var(--muted); }
 .house-card.here { border-color: var(--gold-deep); background: linear-gradient(180deg, #2b2216, #211b13); }
 .house-card .crest { width: 34px; height: 34px; flex: none; }
 .house-card strong { display: block; font: 600 16px var(--display); }
