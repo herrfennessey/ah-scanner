@@ -188,7 +188,7 @@ func run(ctx context.Context, cmd string, args []string) error {
 				return err
 			}
 			defer webStore.Close()
-			srv := &web.Server{Cfg: cfg, Store: webStore, Log: log}
+			srv := &web.Server{Cfg: cfg, Store: webStore, Log: log, API: c.API}
 			go func() {
 				if err := srv.ListenAndServe(ctx, cfg.Listen); err != nil {
 					log.Error("web UI stopped", "err", err)
@@ -214,7 +214,11 @@ func run(ctx context.Context, cmd string, args []string) error {
 		if addr == "" {
 			addr = ":4653"
 		}
-		return (&web.Server{Cfg: cfg, Store: st, Log: log}).ListenAndServe(ctx, addr)
+		var api *blizzard.Client
+		if cfg.ClientID != "" {
+			api = blizzard.New(cfg.APIBase, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, cfg.Locale, log)
+		}
+		return (&web.Server{Cfg: cfg, Store: st, Log: log, API: api}).ListenAndServe(ctx, addr)
 	case "backtest":
 		return runBacktest(ctx, cfg, st, f)
 	case "rollup":

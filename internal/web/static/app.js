@@ -58,16 +58,14 @@ function change(v) {
 function icon(row, big) {
   const style = row.icon ? ` style="background-image:url('${esc(row.icon)}')"` : "";
   // Icons with an item id show the in-game tooltip on hover, focus or tap (itemTip below).
-  const tipAttrs = row.id ? ` data-tip-item="${esc(row.id)}" tabindex="0" role="img" aria-label="${esc(row.name || "Item")}: show details"` : ` aria-hidden="true"`;
+  const tipAttrs = row.id ? ` data-tip-item="${esc(row.id)}"${row.variant ? ` data-tip-variant="${esc(row.variant)}"` : ""} tabindex="0" role="img" aria-label="${esc(row.name || "Item")}: show details"` : ` aria-hidden="true"`;
   return `<span class="icon ${big ? "big" : ""} q${row.quality ?? 1}"${style}${tipAttrs}></span>`;
 }
+// Faction crests are the game's own icons (honor currency), from Blizzard's icon server like the
+// item icons; Blackwater (neutral) has none, so it keeps a drawn coin.
+const CREST_ICON = { horde: "pvpcurrency-honor-horde", alliance: "pvpcurrency-honor-alliance" };
 function crest(faction) {
-  if (faction === "horde") {
-    return `<svg class="crest" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#2a120f" stroke="#7a2a20"/><path d="M9 7h14v14l-7 5-7-5z" fill="#b8352b"/><path d="M16 10v11M12 13l4 3 4-3" stroke="#f3c2a4" stroke-width="1.6" fill="none"/></svg>`;
-  }
-  if (faction === "alliance") {
-    return `<svg class="crest" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#101c33" stroke="#2d4c86"/><path d="M9 7h14v14l-7 5-7-5z" fill="#2b56a8"/><path d="M16 10l3 5h-6z" fill="#e8d28a"/></svg>`;
-  }
+  if (CREST_ICON[faction]) return `<img class="crest crest-img" src="https://render.worldofwarcraft.com/icons/56/${CREST_ICON[faction]}.jpg" alt="" aria-hidden="true">`;
   return `<svg class="crest" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#2a2110" stroke="#8a6a2a"/><circle cx="16" cy="16" r="9.5" fill="#d8b25c"/><circle cx="16" cy="16" r="6" fill="none" stroke="#7a5a1c" stroke-width="1.6"/></svg>`;
 }
 const factionName = (f) => f ? f[0].toUpperCase() + f.slice(1) : "";
@@ -130,11 +128,18 @@ function previewLines(p) {
 function coins(sp) {
   return sp?.value ? `<div class="tl tl-sell">Sell Price: ${money(sp.value)}</div>` : "";
 }
+const STAT_FULL = { STRENGTH: "Strength", AGILITY: "Agility", STAMINA: "Stamina", INTELLECT: "Intellect", SPIRIT: "Spirit", ATTACK_POWER: "Attack Power" };
 function renderItemTip(t) {
   const p = t.preview || {};
   const q = t.preview ? qualityOf(p.quality) : t.quality;
-  let html = `<div class="tip-head">${icon({ icon: t.icon, quality: q })}<span class="tip-name q${q}">${esc(p.name || t.name)}</span></div>`;
+  let html = `<div class="tip-head">${icon({ icon: t.icon, quality: q })}<span class="tip-name q${q}">${esc(t.suffix_name || p.name || t.name)}</span></div>`;
   html += previewLines(p);
+  if (t.suffix_stats?.length || t.suffix_other) {
+    // In game the suffix stats sit with the base stats; here they follow, marked when not exact.
+    html += (t.suffix_stats || []).map((l) => `<div class="tl tl-suffix">+${l.min === l.max ? l.value : `${l.min}–${l.max}`} ${STAT_FULL[l.stat] || l.stat}</div>`).join("");
+    if (t.suffix_other) html += `<div class="tl tl-flavor">+ ${t.suffix_other === 1 ? "another suffix stat" : `${t.suffix_other} more suffix stats`} not shown</div>`;
+    if (!t.suffix_exact && t.suffix_stats?.length) html += `<div class="tl tl-flavor">Suffix range: this slot isn't checked against real gear yet.</div>`;
+  }
   if (p.recipe?.item) {
     const r = p.recipe.item;
     html += `<div class="tip-sep"></div><div class="tl q${qualityOf(r.quality)}">${esc(r.name)}</div>${previewLines(r)}`;
@@ -155,12 +160,12 @@ const TIP_TTL = 60000;
 let tipFor = null, tipShown = null; // requested vs. actually showing
 const touchOnly = () => matchMedia("(hover: none)").matches;
 async function itemTip(el, ev) {
-  const id = el.dataset.tipItem;
+  const id = el.dataset.tipItem, variant = el.dataset.tipVariant || "";
   tipFor = el;
-  const key = `${id}/${state.house}`;
+  const key = `${id}/${variant}/${state.house}`;
   const cached = itemTips.get(key);
   if (!cached || Date.now() - cached.at > TIP_TTL) {
-    itemTips.set(key, { at: Date.now(), p: api(`/api/item/${id}/tooltip?house=${encodeURIComponent(state.house)}`).catch((err) => { itemTips.delete(key); throw err; }) });
+    itemTips.set(key, { at: Date.now(), p: api(`/api/item/${id}/tooltip?house=${encodeURIComponent(state.house)}${variant ? `&variant=${encodeURIComponent(variant)}` : ""}`).catch((err) => { itemTips.delete(key); throw err; }) });
   }
   let t;
   try { t = await itemTips.get(key).p; } catch { return; }
@@ -961,6 +966,169 @@ function inScope(w, scope) {
   if (scope.startsWith("c:")) return w.continent === scope.slice(2);
   return w.customer.zone === scope.slice(2);
 }
+/* upgrades: an armory-style paper doll with the best upgrade under each slot */
+const DOLL_LEFT = ["HEAD", "NECK", "SHOULDER", "BACK", "CHEST", "SHIRT", "TABARD", "WRIST"];
+const DOLL_RIGHT = ["HANDS", "WAIST", "LEGS", "FEET", "FINGER_1", "FINGER_2", "TRINKET_1", "TRINKET_2"];
+const DOLL_BOTTOM = ["MAIN_HAND", "OFF_HAND", "RANGED"];
+const DOLL_NAME = { HEAD: "Head", NECK: "Neck", SHOULDER: "Shoulder", BACK: "Back", CHEST: "Chest", SHIRT: "Shirt", TABARD: "Tabard",
+  WRIST: "Wrist", HANDS: "Hands", WAIST: "Waist", LEGS: "Legs", FEET: "Feet", FINGER_1: "Ring", FINGER_2: "Ring", TRINKET_1: "Trinket",
+  TRINKET_2: "Trinket", MAIN_HAND: "Main hand", OFF_HAND: "Off hand", RANGED: "Idol / ranged" };
+// upgrade rows use grouped slots; map a doll slot to its group
+const dollGroup = (k) => k.startsWith("FINGER") ? "FINGER" : k.startsWith("TRINKET") ? "TRINKET" : k === "HANDS" ? "HAND" : k;
+const WEIGHT_ORDER = ["DPS", "STRENGTH", "AGILITY", "ATTACK_POWER", "CRIT_RATING", "HIT_RATING", "STAMINA", "INTELLECT", "SPIRIT"];
+const STAT_SHORT = { DPS: "DPS", STRENGTH: "Str", AGILITY: "Agi", STAMINA: "Sta", INTELLECT: "Int", SPIRIT: "Spi", ATTACK_POWER: "AP", CRIT_RATING: "Crit", HIT_RATING: "Hit" };
+function statLine(it) {
+  const parts = Object.entries(it.stats || {}).filter(([, v]) => v).map(([k, v]) => `+${v} ${STAT_SHORT[k] || k.toLowerCase().replace(/_/g, " ")}`);
+  if (it.dps) parts.unshift(`${it.dps.toFixed(1)} dps`);
+  const line = parts.join(" · ");
+  return it.approx && line ? `<span class="approx" title="Suffix stats worked out from the game data; this slot isn't checked against a real character yet, so they may be off by a point or two.">≈ ${line}</span>` : line;
+}
+function signed(v) { return !v ? `<span class="none">—</span>` : `<span class="${v > 0 ? "up" : "down"}">${v > 0 ? "+" : ""}${Math.round(v)}</span>`; }
+const itemHref = (it) => `#/item/${it.id}${it.variant ? `?variant=${encodeURIComponent(it.variant)}` : ""}`;
+function dollIcon(it) {
+  const q = it ? it.quality ?? 1 : -1;
+  return `<span class="doll-icon q-border${q}">${it && it.icon ? `<img src="${esc(it.icon)}" alt="" loading="lazy">` : ""}</span>`;
+}
+// For a ring/trinket the upgrade belongs to the one it replaces (or the empty one).
+function upgradesFor(key, doll, rows) {
+  const g = dollGroup(key);
+  return rows.filter((r) => {
+    if (r.slot !== g) return false;
+    if (g !== "FINGER" && g !== "TRINKET") return true;
+    const mine = doll[key];
+    const rep = (r.replaces || [])[0];
+    // id and suffix: two copies of a ring can carry different suffixes
+    return rep ? mine && rep.id === mine.id && (rep.variant || "") === (mine.variant || "") : !mine;
+  });
+}
+function dollSlot(key, side, doll, rows, open) {
+  const it = doll[key], ups = upgradesFor(key, doll, rows), best = ups[0];
+  return `<button class="doll-slot ${side} ${open === key ? "open" : ""}" data-slot="${key}" type="button">
+    ${dollIcon(it)}
+    <span class="doll-text">
+      ${it ? `<span class="doll-name q${it.quality}">${esc(it.name)}</span>
+        <span class="doll-sub">${it.ilvl || ""}${it.enchant ? ` <span class="doll-ench">${esc(it.enchant)}</span>` : ""}</span>`
+        : `<span class="doll-name empty">${DOLL_NAME[key]}</span>`}
+      ${best ? `<span class="doll-up">▲ +${best.gain} · ${plain(best.item.price)}${ups.length > 1 ? ` <em>${ups.length} options</em>` : ""}</span>` : ""}
+    </span>
+  </button>`;
+}
+let upSortNote = "best gain per gold first";
+function upgradeList(filter, doll, rows) {
+  const list = filter ? upgradesFor(filter, doll, rows) : rows;
+  const it = filter && doll[filter];
+  const head = filter
+    ? `<div class="up-filter"><span>${DOLL_NAME[filter]}${it ? ` · wearing <span class="q${it.quality}">${esc(it.name)}</span>` : " · empty"}</span>
+        <button type="button" class="up-clear" data-clear title="Show every slot">✕</button></div>`
+    : `<div class="up-filter all"><span>All slots · ${upSortNote}</span></div>`;
+  if (!list.length) return head + emptyState("Nothing better listed", "No item clears the minimum gain with these filters.");
+  return head + `<ol class="up-list">${list.slice(0, 60).map((r) => { const x = r.item; return `<li>
+    ${icon({ id: x.id, variant: x.variant, name: x.name, icon: x.icon, quality: x.quality })}
+    <div class="up-main">
+      <a class="adv-item q${x.quality}" href="${itemHref(x)}">${esc(x.name)}</a>
+      <div class="item-sub">${filter ? "" : `${SLOT_NAME[r.slot] || r.slot} · `}${x.req_level > 1 ? `lvl ${x.req_level} · ` : ""}${statLine(x)}${r.ahead ? ` · <span class="tag tag-hot">level ${x.req_level}</span>` : ""}</div>
+      <div class="up-deltas">${r.health ? `<span>${signed(r.health)} health</span>` : ""}${r.mana ? `<span>${signed(r.mana)} mana</span>` : ""}${r.spirit ? `<span>${signed(r.spirit)} spirit</span>` : ""}${(x.flags || []).map((f) => `<span class="vol">${esc(f)}</span>`).join("")}</div>
+    </div>
+    <div class="up-num"><div class="line"><b>+${r.gain}</b><small>${r.per_gold}/g</small></div><div class="line">${money(x.price)}<small>${factionName(x.house)}</small></div></div>
+  </li>`; }).join("")}</ol>${list.length > 60 ? `<p class="fine">Top 60 of ${list.length}. Raise the minimum gain or set a max price to narrow it.</p>` : ""}`;
+}
+const SLOT_NAME = { HEAD: "Head", NECK: "Neck", SHOULDER: "Shoulder", BACK: "Back", CHEST: "Chest", WRIST: "Wrist", HAND: "Hands",
+  WAIST: "Waist", LEGS: "Legs", FEET: "Feet", FINGER: "Ring", TRINKET: "Trinket", MAIN_HAND: "Main hand", OFF_HAND: "Off hand", RANGED: "Idol / ranged" };
+const DOLL_STATS = [["health", "Health", "hp"], ["power", "Mana", "mana"], ["strength", "Strength", "str"], ["agility", "Agility", "agi"],
+  ["stamina", "Stamina", "sta"], ["intellect", "Intellect", "int"], ["spirit", "Spirit", "spi"], ["attack_power", "Attack power", "ap"], ["melee_crit", "Crit", "crit"]];
+const INV_NAME = { HEAD: "head", NECK: "neck", SHOULDER: "shoulder", CLOAK: "back", CHEST: "chest", ROBE: "robe", WRIST: "wrist",
+  HAND: "hands", WAIST: "waist", LEGS: "legs", FEET: "feet", FINGER: "rings", TRINKET: "trinkets", TWOHWEAPON: "two-handers",
+  WEAPON: "one-handers", WEAPONMAINHAND: "main-hand weapons", HOLDABLE: "off-hand items", SHIELD: "shields", RANGED: "ranged", RELIC: "idols" };
+function checkedLine() {
+  return `<p class="fine up-checked" title="Solved from 663 fixed-stat items: one budget column reproduces Blizzard's stats for 100% of each slot's items.">Suffix stats are exact for every slot except trinkets, idols, thrown and off-hand weapons (≈).</p>`;
+}
+let upGen = 0; // bumped by every Upgrades request and page render
+async function renderUpgrades() {
+  upGen++;
+  const f = { buyOnce: store.get("upBuyOnce2", false), character: store.get("upChar", "Sine Wave"), ahead: store.get("upAhead", false), minGain: store.get("upMinGain", 3), maxPrice: store.get("upMaxPrice", "") };
+  if (f.character === "sine-wave") f.character = "Sine Wave";
+  let open = "";
+  $("#view").innerHTML = `
+    <form class="up-form" id="up-form">
+      <label>Character <input name="character" value="${esc(f.character)}" size="16" placeholder="First Last"></label>
+      <label title="Biggest upgrade first instead of the most per gold, and skip items more than 10 levels below you: buy once, not every few levels."><input type="checkbox" name="buyOnce" ${f.buyOnce ? "checked" : ""}> Buy once</label>
+      <label><input type="checkbox" name="ahead" ${f.ahead ? "checked" : ""}> include the next 3 levels</label>
+      <label>Min gain <input name="minGain" type="number" step="1" value="${esc(String(f.minGain))}" style="width:4em"></label>
+      <label>Max price <input name="maxPrice" type="number" step="0.1" placeholder="gold" value="${esc(String(f.maxPrice))}" style="width:5em"></label>
+      <button class="btn">Load</button>
+      <span class="up-help" tabindex="0" aria-label="How to use this">?<span class="up-tip" role="tooltip">
+        <b>Name</b> as on the armory, e.g. Sine Wave.<br>
+        <b>Gain</b> = stat points over what you wear. <b>Buy once</b>: biggest upgrade first, nothing more than 10 levels below you; off: most gain per gold.<br>
+        <b>Click a slot</b> to filter, ✕ to clear.<br>
+        <b>≈</b> suffix stats not yet checked on real gear.</span></span>
+      <span class="tag tag-new">preview</span>
+    </form>
+    <div id="up-out" aria-live="polite"></div>`;
+  const form = $("#up-form");
+  let d;
+  const draw = () => {
+    const out = $("#up-out"), c = d.character, doll = c.doll || {}, rows = d.rows || [];
+    upSortNote = f.buyOnce ? `biggest upgrade first · level ${Math.max(1, c.level - 10)}+` : "best gain per gold first";
+    out.innerHTML = `<div class="up-layout">
+      <section class="doll">
+        ${c.render ? `<img class="doll-render" src="${esc(c.render)}" alt="">` : ""}
+        <header class="doll-head">${crest(c.faction)}
+          <div><h2>${esc(c.name)}${c.surname ? ` ${esc(c.surname)}` : ""}</h2>
+          <div class="doll-meta"><b>${c.equipped_item_level} ilvl</b> · ${c.level} ${esc(c.race)} ${esc(c.class)}</div></div>
+        </header>
+        <div class="doll-grid">
+          <div class="doll-col">${DOLL_LEFT.map((k) => dollSlot(k, "left", doll, rows, open)).join("")}</div>
+          <div class="doll-mid"></div>
+          <div class="doll-col">${DOLL_RIGHT.map((k) => dollSlot(k, "right", doll, rows, open)).join("")}</div>
+        </div>
+        <div class="doll-bottom">${DOLL_BOTTOM.map((k, i) => dollSlot(k, i === 0 ? "right" : "left", doll, rows, open)).join("")}</div>
+        <div class="doll-stats">${DOLL_STATS.filter(([k]) => c.stats[k] != null).map(([k, label, cls]) => `<div class="doll-stat ${cls}"><b>${k === "melee_crit" ? `${c.stats[k].toFixed(1)}%` : count(c.stats[k])}</b><span>${label}</span></div>`).join("")}</div>
+      </section>
+      <aside class="panel up-side">
+        <h3 class="panel-title">Upgrades <span class="aside">${count(d.candidates)} usable items listed</span></h3>
+        <form class="up-weights" id="up-weights" title="Points per stat point (weapon: per DPS). Hover a stat for where its weight comes from; edits are kept in this browser.">
+          <span class="up-weights-name">${esc(d.preset.name)}</span>
+          ${WEIGHT_ORDER.filter((k) => k in d.weights).map((k) => `<label title="${esc(d.preset.sources[k] || "")}">${STAT_SHORT[k] || k}<input name="${k}" type="number" min="0" max="100" step="0.1" value="${+d.weights[k].toFixed(2)}"></label>`).join("")}
+          <button type="button" class="up-reset" title="Back to the preset's weights">reset</button>
+        </form>
+        ${checkedLine()}
+        <div id="up-list">${upgradeList(open, doll, rows)}</div>
+      </aside></div>`;
+    out.querySelectorAll(".doll-slot").forEach((b) => b.addEventListener("click", () => { open = open === b.dataset.slot ? "" : b.dataset.slot; draw(); }));
+    out.querySelector("[data-clear]")?.addEventListener("click", () => { open = ""; draw(); });
+    const wf = $("#up-weights");
+    wf.addEventListener("change", () => {
+      const edited = {};
+      for (const el of wf.querySelectorAll("input")) if (el.value !== "" && +el.value !== +d.preset.weights[el.name].toFixed(2)) edited[el.name] = +el.value; // inputs show 2 decimals
+      store.set("upWeights", edited);
+      load();
+    });
+    wf.querySelector(".up-reset").addEventListener("click", () => { store.set("upWeights", {}); load(); });
+  };
+  const load = async (fresh = false) => {
+    f.character = form.character.value.trim(); f.buyOnce = form.buyOnce.checked; store.set("upBuyOnce2", f.buyOnce); f.ahead = form.ahead.checked; f.minGain = form.minGain.value; f.maxPrice = form.maxPrice.value;
+    store.set("upChar", f.character); store.set("upAhead", f.ahead); store.set("upMinGain", f.minGain); store.set("upMaxPrice", f.maxPrice);
+    const out = $("#up-out");
+    out.innerHTML = `<div class="panel"><div class="empty-state">Loading ${esc(f.character)} from the armory and scoring the auction house…</div></div>`;
+    // Filters can change while a request is out: only the latest one may draw, and none once the
+    // page has been left or re-rendered (renderUpgrades bumps upGen too).
+    const gen = ++upGen;
+    let res;
+    try {
+      const wq = Object.entries(store.get("upWeights", {})).map(([k, v]) => `&w_${k}=${encodeURIComponent(v)}`).join("");
+      res = await api(`/api/upgrades?character=${encodeURIComponent(f.character)}${fresh ? "&fresh=1" : ""}&buy_once=${f.buyOnce ? 1 : 0}&ahead=${f.ahead ? 1 : 0}&min_gain=${encodeURIComponent(f.minGain)}&max_price=${encodeURIComponent(f.maxPrice)}${wq}`);
+    } catch (err) {
+      if (gen === upGen && out.isConnected) out.innerHTML = `<div class="panel">${emptyState("Couldn't load that character", esc(err.message))}</div>`;
+      return;
+    }
+    if (gen !== upGen || !out.isConnected) return; // superseded
+    d = res;
+    draw();
+  };
+  form.addEventListener("submit", (e) => { e.preventDefault(); load(true); }); // Load: always from the armory
+  form.addEventListener("change", (e) => { if (e.target.type === "checkbox") load(); });
+  load();
+}
 async function renderSupply() {
   $("#view").innerHTML = `
     <section class="panel flips-panel">
@@ -1221,7 +1389,7 @@ function route() {
   const [path, qs] = h.slice(1).split("?");
   const params = new URLSearchParams(qs || "");
   const m = path.match(/^\/item\/(\d+)/);
-  const section = path.startsWith("/status") ? "status" : path.startsWith("/supply") ? "supply" : (m || path.startsWith("/browse")) ? "browse" : "advisor";
+  const section = path.startsWith("/upgrades") ? "upgrades" : path.startsWith("/status") ? "status" : path.startsWith("/supply") ? "supply" : (m || path.startsWith("/browse")) ? "browse" : "advisor";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   $("#hero").classList.toggle("compact", section !== "browse" || !!m);
   $("#layout").classList.toggle("full", section !== "browse");
@@ -1229,6 +1397,7 @@ function route() {
   if (m) return renderItem(m[1], params.get("variant") || "");
   if (section === "status") return renderStatus();
   if (section === "supply") return renderSupply();
+  if (section === "upgrades") return renderUpgrades();
   if (section === "advisor") return renderFlips();
   refreshList();
 }

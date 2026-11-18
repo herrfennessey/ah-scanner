@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"github.com/herrfennessey/ah-scanner/internal/blizzard"
 	"github.com/herrfennessey/ah-scanner/internal/suffix"
 	"io/fs"
 	"log/slog"
@@ -31,6 +32,7 @@ type Server struct {
 	Cfg   config.Config
 	Store *store.Store
 	Log   *slog.Logger
+	API   *blizzard.Client // character lookups for the Upgrades page; nil disables it
 
 	mu        sync.Mutex
 	cache     map[int64]cachedList
@@ -55,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/flips", s.apiFlips)
 	mux.HandleFunc("GET /api/flips/version", s.apiFlipsVersion)
 	mux.HandleFunc("GET /api/supply", s.apiSupply)
+	mux.HandleFunc("GET /api/upgrades", s.apiUpgrades)
 	mcpH := s.mcpHandler()
 	for _, m := range []string{"POST", "GET", "DELETE"} {
 		mux.Handle(m+" /mcp", mcpH) // explicit methods: "/mcp" alone conflicts with "GET /"
