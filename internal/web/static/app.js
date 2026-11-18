@@ -61,13 +61,11 @@ function icon(row, big) {
   const tipAttrs = row.id ? ` data-tip-item="${esc(row.id)}" tabindex="0" role="img" aria-label="${esc(row.name || "Item")}: show details"` : ` aria-hidden="true"`;
   return `<span class="icon ${big ? "big" : ""} q${row.quality ?? 1}"${style}${tipAttrs}></span>`;
 }
+// Faction crests are the game's own icons (honor currency), from Blizzard's icon server like the
+// item icons; Blackwater (neutral) has none, so it keeps a drawn coin.
+const CREST_ICON = { horde: "pvpcurrency-honor-horde", alliance: "pvpcurrency-honor-alliance" };
 function crest(faction) {
-  if (faction === "horde") {
-    return `<svg class="crest" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#2a120f" stroke="#7a2a20"/><path d="M9 7h14v14l-7 5-7-5z" fill="#b8352b"/><path d="M16 10v11M12 13l4 3 4-3" stroke="#f3c2a4" stroke-width="1.6" fill="none"/></svg>`;
-  }
-  if (faction === "alliance") {
-    return `<svg class="crest" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#101c33" stroke="#2d4c86"/><path d="M9 7h14v14l-7 5-7-5z" fill="#2b56a8"/><path d="M16 10l3 5h-6z" fill="#e8d28a"/></svg>`;
-  }
+  if (CREST_ICON[faction]) return `<img class="crest crest-img" src="https://render.worldofwarcraft.com/icons/56/${CREST_ICON[faction]}.jpg" alt="" aria-hidden="true">`;
   return `<svg class="crest" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#2a2110" stroke="#8a6a2a"/><circle cx="16" cy="16" r="9.5" fill="#d8b25c"/><circle cx="16" cy="16" r="6" fill="none" stroke="#7a5a1c" stroke-width="1.6"/></svg>`;
 }
 const factionName = (f) => f ? f[0].toUpperCase() + f.slice(1) : "";

@@ -272,6 +272,7 @@ kbd { font: 12px var(--ui); color: var(--dim); border: 1px solid var(--line-hi);
 .suffix small { display: block; color: var(--muted); }
 .house-card.here { border-color: var(--gold-deep); background: linear-gradient(180deg, #2b2216, #211b13); }
 .house-card .crest { width: 34px; height: 34px; flex: none; }
+.crest-img { border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
 .house-card strong { display: block; font: 600 16px var(--display); }
 .house-card small { color: var(--muted); font-size: 12.5px; }
 .house-card .right { margin-left: auto; text-align: right; }
