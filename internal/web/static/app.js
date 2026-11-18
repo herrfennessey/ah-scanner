@@ -338,6 +338,14 @@ function renderBrowse(classes, all) {
   $("#browse").innerHTML = items.map((c) =>
     `<li><button data-class="${esc(c.name)}" aria-pressed="${state.cls === c.name}"><span>${esc(c.label)}</span><span class="count">${count(c.count)}</span></button></li>`).join("");
 }
+// suffixList links every suffix of an item (listed now first); current marks the one shown.
+function suffixList(id, variants, current) {
+  return `<div class="suffix-list">${variants.map((v) => `
+    <a class="suffix ${v.variant === current ? "here" : ""}" href="#/item/${id}?variant=${encodeURIComponent(v.variant)}">
+      <span>${esc(v.suffix || v.variant)}</span>
+      <span class="right">${v.available ? `${money(v.min)}<small>${count(v.available)} listed</small>` : `<small>not listed now</small>`}</span>
+    </a>`).join("")}</div>`;
+}
 const emptyState = (h, p) => `<div class="empty-state"><h3>${h}</h3><p>${p}</p></div>`;
 
 /* item view */
@@ -359,6 +367,18 @@ async function renderItem(id, variant) {
   const it = item.item, h = item.house, hint = hintCopy(it.hint);
   if (state.classes) renderBrowse();
   else api(`/api/items?house=${state.house}&limit=1`).then((d) => renderBrowse(d.classes, d.all_count)).catch(() => {});
+  const variants = item.variants || [];
+  // Random-suffix gear is priced per suffix; the plain item has nothing of its own to show.
+  if (!variant && variants.length && !item.houses.some((x) => x.row)) {
+    view.innerHTML = `
+      <a class="back" href="#/browse">← Back to the auction house</a>
+      <section class="item-head qh${it.quality}">
+        ${icon(it, true)}
+        <div><h2 class="q${it.quality}">${esc(it.name)}</h2><div class="meta">Comes with a random suffix · each one has its own prices and history</div></div>
+      </section>
+      <section class="panel"><h3 class="panel-title">Pick a suffix <span class="aside">${factionName(h.faction)} auction house</span></h3>${suffixList(id, variants, "")}</section>`;
+    return;
+  }
   const sub = [`<span class="q${it.quality}">${QUALITY[it.quality] || ""}</span>`, it.ilvl ? `Item level <b>${it.ilvl}</b>` : "",
     it.req_level > 1 ? `Requires level <b>${it.req_level}</b>` : "", it.subclass ? esc(it.subclass) : "", `Item ID <b>${it.id}</b>`].filter(Boolean);
   view.innerHTML = `
@@ -395,6 +415,7 @@ async function renderItem(id, variant) {
         <section class="panel when" id="when"></section>
       </div>
       <div class="stack">
+        ${variants.length ? `<section class="panel"><h3 class="panel-title">Suffixes <span class="aside">this house</span></h3>${suffixList(id, variants, variant)}</section>` : ""}
         <section class="panel">
           <h3 class="panel-title">Auction houses <span class="aside">PvP · EU</span></h3>
           ${item.houses.map((x) => `
@@ -895,7 +916,7 @@ async function loadFlips(gold, style, fromScan = false) {
     <thead><tr><th>Item</th><th>Buy from</th><th>Sell at</th><th>Buy at</th><th>List at</th><th>Profit</th><th>Play</th><th title="Units listed cheaper than yours">Cancel if position &gt;</th></tr></thead>
     <tbody>${r.flips.map((f) => `<tr class="${isNew(f) ? "is-new" : ""}">
       <td><div class="item-cell">${icon({ id: f.item_id, name: f.name, icon: f.icon, quality: f.quality })}<div>
-        <a class="adv-item q${f.quality ?? 1}" href="#/item/${f.item_id}" title="${esc(f.why)}">${esc(f.name)}</a>${
+        <a class="adv-item q${f.quality ?? 1}" href="#/item/${f.item_id}${f.variant ? `?variant=${encodeURIComponent(f.variant)}` : ""}" title="${esc(f.why)}">${esc(f.name)}</a>${
         isNew(f) || f.gone_soon >= 0.5 ? `<div class="flip-tags">${isNew(f) ? `<span class="tag tag-new">New</span>` : ""}${
         f.gone_soon >= 0.5 ? `<span class="tag tag-hot" title="About ${pct(f.gone_soon)} of listings like this are gone within an hour of a scan">Going fast</span>` : ""}</div>` : ""}</div></div></td>
       <td data-label="Buy from">${houseTag(f.buy_house)}</td>

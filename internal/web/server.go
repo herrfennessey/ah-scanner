@@ -454,6 +454,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	}
 	var houses []perHouse
 	var self *ItemRow
+	listed := map[string]*ItemRow{} // this house's suffix variants listed now
 	for _, hh := range hs {
 		rows, err := s.buildRows(r.Context(), hh.ID)
 		if err != nil {
@@ -462,9 +463,14 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 		}
 		var found *ItemRow
 		for i := range rows {
-			if rows[i].ID == id && rows[i].Variant == variant {
+			if rows[i].ID != id {
+				continue
+			}
+			if rows[i].Variant == variant {
 				found = &rows[i]
-				break
+			}
+			if hh.ID == h.ID && rows[i].Variant != "" {
+				listed[rows[i].Variant] = &rows[i]
 			}
 		}
 		houses = append(houses, perHouse{hh, found})
@@ -479,19 +485,55 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, errors.New("this item has not been seen on the auction house"))
 			return
 		}
-		self = &ItemRow{ID: id, Name: m.name, Quality: m.quality, ItemLevel: m.ilvl, ReqLevel: m.req, Class: m.class, Subclass: m.subclass, Icon: m.icon, SellThru: -1}
+		self = &ItemRow{ID: id, Variant: variant, Suffix: suffix.Name(variant), Name: suffix.Label(m.name, variant), Quality: m.quality,
+			ItemLevel: m.ilvl, ReqLevel: m.req, Class: m.class, Subclass: m.subclass, Icon: m.icon, SellThru: -1}
 	}
-	var variants []string
-	rows, err := s.Store.DB.QueryContext(r.Context(), `SELECT DISTINCT variant FROM auction WHERE house_id=? AND item_id=? AND variant != '' LIMIT 50`, h.ID, id)
+	writeJSON(w, map[string]any{"house": h, "item": self, "houses": houses, "variants": s.itemVariants(r.Context(), h.ID, id, listed)})
+}
+
+// variantOut is one random suffix of an item on the item page; each has its own prices and
+// history, so the page links to them rather than mixing them.
+type variantOut struct {
+	Variant   string `json:"variant"`
+	Name      string `json:"name"`
+	Suffix    string `json:"suffix,omitempty"`
+	Min       int64  `json:"min"`
+	Fair      int64  `json:"fair"`
+	Available int64  `json:"available"`
+}
+
+// itemVariants lists the item's variants seen at this house: those listed now first (most units
+// first), then ones seen before, by name.
+func (s *Server) itemVariants(ctx context.Context, houseID, id int64, listed map[string]*ItemRow) []variantOut {
+	seen := map[string]bool{}
+	var out []variantOut
+	for v, row := range listed {
+		seen[v] = true
+		out = append(out, variantOut{Variant: v, Name: row.Name, Suffix: row.Suffix, Min: row.Min, Fair: row.Fair, Available: row.Available})
+	}
+	var base string
+	s.Store.DB.QueryRowContext(ctx, `SELECT COALESCE(name,'') FROM item WHERE id=?`, id).Scan(&base)
+	if base == "" {
+		base = "Item #" + strconv.FormatInt(id, 10)
+	}
+	rows, err := s.Store.DB.QueryContext(ctx, `SELECT DISTINCT variant FROM auction WHERE house_id=? AND item_id=? AND variant != '' LIMIT 200`, houseID, id)
 	if err == nil {
 		for rows.Next() {
 			var v string
-			rows.Scan(&v)
-			variants = append(variants, v)
+			if rows.Scan(&v) == nil && !seen[v] {
+				seen[v] = true
+				out = append(out, variantOut{Variant: v, Name: suffix.Label(base, v), Suffix: suffix.Name(v)})
+			}
 		}
 		rows.Close()
 	}
-	writeJSON(w, map[string]any{"house": h, "item": self, "houses": houses, "variants": variants})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Available != out[j].Available {
+			return out[i].Available > out[j].Available
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 type histPoint struct {
