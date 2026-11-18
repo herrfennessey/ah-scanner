@@ -77,6 +77,13 @@ func TestCheckConfirmsOrCorrects(t *testing.T) {
 	if col, exact := slotColumn("TRINKET"); col != 2 || !exact {
 		t.Fatalf("corrected column not used: %d %v", col, exact)
 	}
+	// A harvested slot contradicted by real gear, never confirmed, turns uncertain.
+	if c, _ := Check("HEAD", "b12722", 32, 2, base, map[string]float64{"STRENGTH": 99}, "Odd"); c.Status != "mismatch" {
+		t.Fatalf("%+v", c)
+	}
+	if _, exact := slotColumn("HEAD"); exact {
+		t.Fatal("a contradicted slot still reads as exact")
+	}
 	// One odd item doesn't undo a confirmed slot.
 	if c, _ := Check("SHOULDER", "b12722", 32, 2, base, map[string]float64{"STRENGTH": 99}, "Odd"); c.Status != "checked" {
 		t.Fatalf("%+v", c)

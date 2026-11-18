@@ -997,7 +997,8 @@ function upgradesFor(key, doll, rows) {
     if (g !== "FINGER" && g !== "TRINKET") return true;
     const mine = doll[key];
     const rep = (r.replaces || [])[0];
-    return rep ? mine && rep.id === mine.id : !mine;
+    // id and suffix: two copies of a ring can carry different suffixes
+    return rep ? mine && rep.id === mine.id && (rep.variant || "") === (mine.variant || "") : !mine;
   });
 }
 function dollSlot(key, side, doll, rows, open) {
@@ -1066,7 +1067,6 @@ async function renderUpgrades() {
   const draw = () => {
     const out = $("#up-out"), c = d.character, doll = c.doll || {}, rows = d.rows || [];
     upSortNote = f.buyOnce ? `biggest upgrade first · level ${Math.max(1, c.level - 10)}+` : "best gain per gold first";
-    const w = d.preset.weights;
     out.innerHTML = `<div class="up-layout">
       <section class="doll">
         ${c.render ? `<img class="doll-render" src="${esc(c.render)}" alt="">` : ""}
@@ -1085,11 +1085,11 @@ async function renderUpgrades() {
       <aside class="panel up-side">
         <h3 class="panel-title">Upgrades <span class="aside">${count(d.candidates)} usable items listed</span></h3>
         <form class="up-weights" id="up-weights" title="Points per stat point (weapon: per DPS). Hover a stat for where its weight comes from; edits are kept in this browser.">
-          <span class="up-weights-name">Feral (cat)</span>
+          <span class="up-weights-name">${esc(d.preset.name)}</span>
           ${WEIGHT_ORDER.filter((k) => k in d.weights).map((k) => `<label title="${esc(d.preset.sources[k] || "")}">${STAT_SHORT[k] || k}<input name="${k}" type="number" min="0" max="100" step="0.1" value="${+d.weights[k].toFixed(2)}"></label>`).join("")}
           <button type="button" class="up-reset" title="Back to the preset's weights">reset</button>
         </form>
-        ${checkedLine(d.checked || [])}
+        ${checkedLine()}
         <div id="up-list">${upgradeList(open, doll, rows)}</div>
       </aside></div>`;
     out.querySelectorAll(".doll-slot").forEach((b) => b.addEventListener("click", () => { open = open === b.dataset.slot ? "" : b.dataset.slot; draw(); }));
@@ -1097,7 +1097,7 @@ async function renderUpgrades() {
     const wf = $("#up-weights");
     wf.addEventListener("change", () => {
       const edited = {};
-      for (const el of wf.querySelectorAll("input")) if (el.value !== "" && +el.value !== d.preset.weights[el.name]) edited[el.name] = +el.value;
+      for (const el of wf.querySelectorAll("input")) if (el.value !== "" && +el.value !== +d.preset.weights[el.name].toFixed(2)) edited[el.name] = +el.value; // inputs show 2 decimals
       store.set("upWeights", edited);
       load();
     });

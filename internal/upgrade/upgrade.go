@@ -37,10 +37,12 @@ var Presets = map[string]Preset{
 			"AGILITY":      "Agility = Strength (guide 1)",
 			"ATTACK_POWER": "unit",
 			"CRIT_RATING":  "1% crit ≈ 20 AP (guide 1), 14 rating per 1% (client combat ratings)",
-			"HIT_RATING":   "estimate: 1% hit ≈ 20 AP, 10 rating per 1%; upper bound below the raid cap",
-			"STAMINA":      "our default for solo levelling: half a Strength point (guide 1: last for cat DPS, first for tanking; solo you take every hit). Adjust to taste",
-			"INTELLECT":    "0 by default: mana for shifting out and healing, no damage (guide 1). Adjust to taste",
-			"SPIRIT":       "0 by default: out-of-combat regeneration, no damage (guide 1). Adjust to taste",
+			// 10 rating per 1% is the client's combat ratings table (gametables/combatratings.txt,
+			// build 1.60.1.70959, flat at every level); 1% hit ≈ 20 AP is our estimate.
+			"HIT_RATING": "estimate: 1% hit ≈ 20 AP, 10 rating per 1%; upper bound below the raid cap",
+			"STAMINA":    "our default for solo levelling: half a Strength point (guide 1: last for cat DPS, first for tanking; solo you take every hit). Adjust to taste",
+			"INTELLECT":  "0 by default: mana for shifting out and healing, no damage (guide 1). Adjust to taste",
+			"SPIRIT":     "0 by default: out-of-combat regeneration, no damage (guide 1). Adjust to taste",
 		},
 	},
 }
@@ -61,6 +63,15 @@ func Usable(class, subclass int) bool {
 		return druidWeapons[subclass]
 	}
 	return false
+}
+
+// ProficiencyLevel is the level a druid learns the weapon skill at (Polearms: 20, from the same
+// SkillRaceClassInfo rows); 0 when it is known from the start.
+func ProficiencyLevel(class, subclass int) int {
+	if class == 2 && subclass == 6 {
+		return 20
+	}
+	return 0
 }
 
 // Slot groups inventory types into the character's equipment slots.
@@ -146,6 +157,11 @@ func slotColumn(invType string) (int, bool) {
 	if ok && c.Status != "mismatch" {
 		return c.Column, true
 	}
+	if ok {
+		// Real gear contradicted the calculation (and no item ever confirmed it): keep scoring at
+		// the column but show it as uncertain, even in a harvested slot.
+		return c.Column, false
+	}
 	col, _ := guessColumn(invType)
 	return col, harvested[invType]
 }
@@ -170,20 +186,31 @@ func Check(invType, variant string, ilvl, quality int, base, actual map[string]f
 		}
 		return true
 	}
-	if s, _ := suffixAt(variant, ilvl, quality, guess); len(s) == 0 {
+	// Test against the column in use (an earlier correction, else the guess), so a corrected slot
+	// is confirmed by the next item rather than corrected again.
+	cur, _ := slotColumn(invType)
+	if s, _ := suffixAt(variant, ilvl, quality, cur); len(s) == 0 {
 		return Checked{}, false // no scorable suffix stats on it: proves nothing
 	}
-	c := Checked{InvType: invType, Column: guess, By: by, Status: "checked"}
-	if !matches(guess) {
+	c := Checked{InvType: invType, Column: cur, By: by, Status: "checked"}
+	if cur != guess {
+		c.Status = "corrected"
+	}
+	if !matches(cur) {
 		var hit []int
 		for col := 0; col < 5; col++ {
-			if col != guess && matches(col) {
+			if col != cur && matches(col) {
 				hit = append(hit, col)
 			}
 		}
-		if len(hit) == 1 {
+		switch {
+		case len(hit) == 1 && harvested[invType]:
+			// The harvested column reproduced every fixed-stat item of the slot; one item
+			// doesn't overturn it.
+			c.Status, c.Detail = "mismatch", fmt.Sprintf("armory %v fits column %d, not the harvested %d", actual, hit[0], cur)
+		case len(hit) == 1:
 			c.Column, c.Status = hit[0], "corrected"
-		} else {
+		default:
 			c.Status, c.Detail = "mismatch", fmt.Sprintf("armory %v, no single column fits", actual)
 		}
 	}
@@ -363,18 +390,26 @@ func Find(equipped map[string][]Item, cands []Item, w map[string]float64, o Opti
 		out = append(out, Row{Slot: slot, Item: c, Replaces: replaces, Gain: math.Round(gain*10) / 10,
 			PerGold: math.Round(gain/(float64(c.Price)/10000)*10) / 10,
 			Health:  (c.Stats["STAMINA"] - oldStats["STAMINA"]) * o.HealthPerSt,
-			Mana:    (c.Stats["INTELLECT"] - oldStats["INTELLECT"]) * 15,
+			Mana:    (c.Stats["INTELLECT"] - oldStats["INTELLECT"]) * 15, // 15 mana per Intellect (guide 1)
 			Spirit:  c.Stats["SPIRIT"] - oldStats["SPIRIT"],
 			Ahead:   c.ReqLevel > o.Level})
 	}
+	// Candidates arrive in map order: break ties fully so the list (and each slot's best) is stable.
 	sort.Slice(out, func(i, j int) bool {
-		if o.BuyOnce && out[i].Gain != out[j].Gain {
-			return out[i].Gain > out[j].Gain
+		a, b := out[i], out[j]
+		if o.BuyOnce && a.Gain != b.Gain {
+			return a.Gain > b.Gain
 		}
-		if o.BuyOnce {
-			return out[i].Item.Price < out[j].Item.Price
+		if !o.BuyOnce && a.PerGold != b.PerGold {
+			return a.PerGold > b.PerGold
 		}
-		return out[i].PerGold > out[j].PerGold
+		if a.Item.Price != b.Item.Price {
+			return a.Item.Price < b.Item.Price
+		}
+		if a.Item.ID != b.Item.ID {
+			return a.Item.ID < b.Item.ID
+		}
+		return a.Item.Variant < b.Item.Variant
 	})
 	return out
 }

@@ -185,17 +185,6 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 			}
 		}
 	}
-	icons := map[int64]string{}
-	if rows, err := s.Store.DB.QueryContext(ctx, `SELECT id, icon FROM item WHERE icon IS NOT NULL AND icon != ''`); err == nil {
-		for rows.Next() {
-			var id int64
-			var ic string
-			if rows.Scan(&id, &ic) == nil {
-				icons[id] = ic
-			}
-		}
-		rows.Close()
-	}
 	for _, e := range eq.Items {
 		slot := e.Slot.Type
 		switch {
@@ -215,13 +204,16 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 			}
 			variant = "b" + strings.Join(parts, ":")
 		}
-		it := upgrade.Item{ID: e.Item.ID, Variant: variant, Name: e.Name, Icon: icons[e.Item.ID],
+		it := upgrade.Item{ID: e.Item.ID, Variant: variant, Name: e.Name,
 			Quality: qualities[e.Quality.Type], InvType: e.InvType.Type, Stats: st, DPS: e.Weapon.DPS.Value,
 			Flags: append(flags, spellFlags(e.Spells)...)}
+		s.Store.DB.QueryRowContext(ctx, `SELECT COALESCE(icon,'') FROM item WHERE id=?`, it.ID).Scan(&it.Icon)
 		if it.Icon == "" {
 			it.Icon = s.itemIcon(ctx, it.ID)
 		}
-		if variant != "" {
+		// The armory's stats include enchants (e.g. "Stamina +3 and Armor +24"), which the
+		// calculation can't separate: only unenchanted items test the suffix columns.
+		if variant != "" && len(e.Enchants) == 0 {
 			s.checkSuffix(ctx, c.Name+" "+c.Surname, e.Name, it, e.Level.Value)
 		}
 		d := &dollItem{Item: it, ILvl: e.Level.Value}
@@ -364,6 +356,9 @@ func (s *Server) candidates(ctx context.Context) ([]upgrade.Item, error) {
 			continue
 		}
 		it.InvType, it.DPS = t.invType, t.dps
+		if lvl := upgrade.ProficiencyLevel(t.class, t.sub); lvl > it.ReqLevel {
+			it.ReqLevel = lvl // e.g. polearms: not wieldable before the skill is learned
+		}
 		it.Stats = map[string]float64{}
 		for k, v := range t.stats {
 			it.Stats[k] = v
@@ -377,7 +372,7 @@ func (s *Server) candidates(ctx context.Context) ([]upgrade.Item, error) {
 			for k, v := range st {
 				it.Stats[k] += v
 			}
-			it.Approx = st != nil && !verified
+			it.Approx = len(st) > 0 && !verified // only when there are suffix stats to be off
 			if unknown > 0 {
 				it.Flags = append(it.Flags, "suffix stat not scored")
 			}
