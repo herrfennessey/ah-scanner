@@ -1042,7 +1042,9 @@ const INV_NAME = { HEAD: "head", NECK: "neck", SHOULDER: "shoulder", CLOAK: "bac
 function checkedLine() {
   return `<p class="fine up-checked" title="Solved from 663 fixed-stat items: one budget column reproduces Blizzard's stats for 100% of each slot's items.">Suffix stats are exact for every slot except trinkets, idols, thrown and off-hand weapons (≈).</p>`;
 }
+let upGen = 0; // bumped by every Upgrades request and page render
 async function renderUpgrades() {
+  upGen++;
   const f = { buyOnce: store.get("upBuyOnce2", false), character: store.get("upChar", "Sine Wave"), ahead: store.get("upAhead", false), minGain: store.get("upMinGain", 3), maxPrice: store.get("upMaxPrice", "") };
   if (f.character === "sine-wave") f.character = "Sine Wave";
   let open = "";
@@ -1108,10 +1110,19 @@ async function renderUpgrades() {
     store.set("upChar", f.character); store.set("upAhead", f.ahead); store.set("upMinGain", f.minGain); store.set("upMaxPrice", f.maxPrice);
     const out = $("#up-out");
     out.innerHTML = `<div class="panel"><div class="empty-state">Loading ${esc(f.character)} from the armory and scoring the auction house…</div></div>`;
+    // Filters can change while a request is out: only the latest one may draw, and none once the
+    // page has been left or re-rendered (renderUpgrades bumps upGen too).
+    const gen = ++upGen;
+    let res;
     try {
       const wq = Object.entries(store.get("upWeights", {})).map(([k, v]) => `&w_${k}=${encodeURIComponent(v)}`).join("");
-      d = await api(`/api/upgrades?character=${encodeURIComponent(f.character)}${fresh ? "&fresh=1" : ""}&buy_once=${f.buyOnce ? 1 : 0}&ahead=${f.ahead ? 1 : 0}&min_gain=${encodeURIComponent(f.minGain)}&max_price=${encodeURIComponent(f.maxPrice)}${wq}`);
-    } catch (err) { out.innerHTML = `<div class="panel">${emptyState("Couldn't load that character", esc(err.message))}</div>`; return; }
+      res = await api(`/api/upgrades?character=${encodeURIComponent(f.character)}${fresh ? "&fresh=1" : ""}&buy_once=${f.buyOnce ? 1 : 0}&ahead=${f.ahead ? 1 : 0}&min_gain=${encodeURIComponent(f.minGain)}&max_price=${encodeURIComponent(f.maxPrice)}${wq}`);
+    } catch (err) {
+      if (gen === upGen && out.isConnected) out.innerHTML = `<div class="panel">${emptyState("Couldn't load that character", esc(err.message))}</div>`;
+      return;
+    }
+    if (gen !== upGen || !out.isConnected) return; // superseded
+    d = res;
     draw();
   };
   form.addEventListener("submit", (e) => { e.preventDefault(); load(true); }); // Load: always from the armory
