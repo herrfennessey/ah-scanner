@@ -94,6 +94,22 @@ Each item page has a **price distribution**: units listed at each price above th
 bought over the last 48 hours below it, market value and the median paid marked, and the cost of
 buying everything up to any price on hover.
 
+**Upgrades** (preview, druids for now) loads a character from the armory (first and last name,
+e.g. Sine Wave) and ranks every item listed now on Horde and Blackwater that beats what it
+wears, by stat gain per gold (or, with **Buy once**, biggest gain first and nothing more than 10
+levels below). The gain is in attack-power points with the Feral (cat) weights: weapon DPS 14
+(14 AP = 1 DPS), Strength and Agility 2, AP 1, crit rating 1.43 (1% crit ≈ 20 AP at 14 rating
+per 1%, flat at every level in the client's combat ratings table), hit rating 2 (our estimate),
+Stamina 1 (our levelling default), Intellect and Spirit 0; all editable on the page. Procs, use
+and equip effects are flagged, not valued.
+
+Random-suffix stats are computed from the client tables (`internal/upgrade/data.go`, `go
+generate`): the bonus list's share of each stat times `RandPropPoints` for the item level,
+quality and the slot's column. The slot columns were solved from 663 fixed-stat items whose
+Blizzard stats one column reproduces for 100% of each slot (`TestColumnsReproduceBlizzardStats`);
+each loaded character's suffix gear is checked against them too. Trinkets, idols, thrown and
+off-hand weapons had no samples and show a range (≈).
+
 **Supply** plans Durotar Supply and Logistics hand-ins at Horde prices:
 
 - **Crates for Merchant's Favor**, cheapest first: an empty Waylaid Crate plus its cheapest
