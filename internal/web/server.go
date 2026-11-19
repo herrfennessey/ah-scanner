@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/flips/version", s.apiFlipsVersion)
 	mux.HandleFunc("GET /api/supply", s.apiSupply)
 	mux.HandleFunc("GET /api/upgrades", s.apiUpgrades)
+	mux.HandleFunc("GET /api/upgrades/specs", s.apiUpgradeSpecs)
 	mcpH := s.mcpHandler()
 	for _, m := range []string{"POST", "GET", "DELETE"} {
 		mux.Handle(m+" /mcp", mcpH) // explicit methods: "/mcp" alone conflicts with "GET /"
