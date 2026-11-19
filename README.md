@@ -97,11 +97,21 @@ buying everything up to any price on hover.
 **Upgrades** (preview, druids for now) loads a character from the armory (first and last name,
 e.g. Sine Wave) and ranks every item listed now on Horde and Blackwater that beats what it
 wears, by stat gain per gold (or, with **Buy once**, biggest gain first and nothing more than 10
-levels below). The gain is in attack-power points with the Feral (cat) weights: weapon DPS 14
-(14 AP = 1 DPS), Strength and Agility 2, AP 1, crit rating 1.43 (1% crit ≈ 20 AP at 14 rating
-per 1%, flat at every level in the client's combat ratings table), hit rating 2 (our estimate),
-Stamina 1 (our levelling default), Intellect and Spirit 0; all editable on the page. Procs, use
-and equip effects are flagged, not valued.
+levels below). Pick a **spec** and the **content** (questing, dungeon, boss); the weights are
+worked out per character from its armory sheet and its real talents (both dual-spec groups come
+back from the armory, whichever is active), and the page explains each one:
+
+- **Feral (cat)**, in attack power: a steady-state cat DPS model (`internal/upgrade/feral.go`:
+  energy, combo points, Omen of Clarity, Rake/Rip/Bite, the attack table by level difference),
+  weights as finite differences. Ability ranks are from `wowsims/forever`; Natural Instinct's
+  crit bonus and Ferocity on Rake follow their tooltips. Stamina is your own choice (1 by default).
+- **Restoration**, in healing power: one mana bar per fight, blending throughput and
+  mana-limited healing by how often you run out (`internal/upgrade/resto.go`: Reflection, Bloom,
+  Innervate, talents by level). Base mana matches the client's `basemp` table.
+
+Both are pinned to their specs' test vectors. Weights stay editable on the page (kept in the
+browser). Procs, use and equip effects are flagged, not valued. A new spec is a preset in
+`internal/upgrade` plus its model; the page lists specs from `/api/upgrades/specs`.
 
 Random-suffix stats are computed from the client tables (`internal/upgrade/data.go`, `go
 generate`): the bonus list's share of each stat times `RandPropPoints` for the item level,

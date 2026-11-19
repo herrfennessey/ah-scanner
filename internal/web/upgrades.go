@@ -8,8 +8,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,8 +34,29 @@ type character struct {
 	Equipped map[string][]upgrade.Item `json:"equipped"`
 	Doll     map[string]*dollItem      `json:"doll"` // by armory slot (HEAD, FINGER_1, …)
 	Stats    map[string]float64        `json:"stats"`
+	Specs    map[string]specGroup      `json:"specs"` // "Restoration", "Feral Combat", … (dual spec)
 	Loaded   int64                     `json:"loaded"`
 }
+
+// specGroup is one talent group from the armory: both dual-spec groups come back whichever is
+// active, so Resto talents are known while logged out in Feral.
+type specGroup struct {
+	Active  bool                   `json:"active"`
+	Talents map[upgrade.Talent]int `json:"talents"` // the talents the Resto model uses
+}
+
+// talentByName maps the armory's talent names to the Resto model's talents.
+var talentByName = map[string]upgrade.Talent{"Heart of the Wild": upgrade.HotW, "Naturalist": upgrade.Naturalist,
+	"Bloom": upgrade.Bloom, "Gift of Nature": upgrade.GoN, "Swiftmend": upgrade.Swiftmend,
+	"Improved Rejuvenation": upgrade.ImpRejuv, "Living Spirit": upgrade.LivingSpirit, "Nature's Swiftness": upgrade.NS,
+	"Reflection": upgrade.Reflection, "Improved Regrowth": upgrade.ImpRegrowth, "Wild Growth": upgrade.WildGrowth,
+	"Tranquil Spirit": upgrade.Tranq,
+	"Furor":           upgrade.Furor, "Feral Swiftness": upgrade.FeralSwiftness, "Feral Instinct": upgrade.FeralInstinct,
+	"Feral Charge": upgrade.FeralCharge, "Sharpened Claws": upgrade.SharpenedClaws, "Shredding Attacks": upgrade.ShreddingAttacks,
+	"Predatory Discipline": upgrade.PredatoryDiscipline, "Predatory Strikes": upgrade.PredatoryStrikes,
+	"Blood Frenzy": upgrade.BloodFrenzy, "Leader of the Pack": upgrade.LeaderOfThePack, "Natural Instinct": upgrade.NaturalInstinct,
+	"Rend and Tear": upgrade.RendAndTear, "Shifting Power": upgrade.ShiftingPower, "Savage Fury": upgrade.SavageFury,
+	"Ferocity": upgrade.Ferocity}
 
 // dollItem is an equipped item as the paper doll shows it.
 type dollItem struct {
@@ -69,23 +93,14 @@ func spellFlags(sp []apiSpell) []string {
 	return f
 }
 
-// typed stats the score or the utility columns use; anything else is flagged.
-var known = map[string]bool{"STRENGTH": true, "AGILITY": true, "ATTACK_POWER": true, "CRIT_RATING": true,
-	"HIT_RATING": true, "STAMINA": true, "INTELLECT": true, "SPIRIT": true}
-
 func statsOf(in []apiStat) (map[string]float64, []string) {
 	out := map[string]float64{}
-	var flags []string
 	for _, s := range in {
-		if s.Type.Type == "" {
-			continue
-		}
-		out[s.Type.Type] += s.Value
-		if !known[s.Type.Type] {
-			flags = append(flags, strings.ToLower(strings.ReplaceAll(s.Type.Type, "_", " ")))
+		if s.Type.Type != "" {
+			out[s.Type.Type] += s.Value
 		}
 	}
-	return out, flags
+	return out, nil // stats the weights don't value are named per row (upgrade.Row.Unscored)
 }
 
 func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*character, error) {
@@ -182,6 +197,36 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 				c.Stats[k] = *obj.Effective
 			case obj.Value != nil:
 				c.Stats[k] = *obj.Value
+			}
+		}
+	}
+	var specs struct {
+		Groups []struct {
+			Active bool `json:"is_active"`
+			Specs  []struct {
+				Spec struct {
+					Name string `json:"name"`
+				} `json:"specialization"`
+				Talents []struct {
+					Talent struct {
+						Name string `json:"name"`
+					} `json:"talent"`
+					Rank int `json:"talent_rank"`
+				} `json:"talents"`
+			} `json:"specializations"`
+		} `json:"specialization_groups"`
+	}
+	c.Specs = map[string]specGroup{}
+	if s.API.GetJSON(ctx, "/profile/wow/character/"+url.PathEscape(slug)+"/specializations", ns, &specs) == nil {
+		for _, g := range specs.Groups {
+			for _, sp := range g.Specs {
+				sg := specGroup{Active: g.Active, Talents: map[upgrade.Talent]int{}}
+				for _, t := range sp.Talents {
+					if k, ok := talentByName[t.Talent.Name]; ok {
+						sg.Talents[k] = t.Rank
+					}
+				}
+				c.Specs[sp.Spec.Name] = sg
 			}
 		}
 	}
@@ -395,9 +440,43 @@ func (s *Server) apiUpgrades(w http.ResponseWriter, r *http.Request) {
 		preset = upgrade.Presets["feral"]
 	}
 	// w_STAMINA=1.5 and so on: the page's edited weights override the preset's.
+	c, err := s.loadCharacter(r.Context(), slug, q.Get("fresh") == "1")
+	if err != nil {
+		fail(w, 502, err)
+		return
+	}
 	weights := map[string]float64{}
 	for k, v := range preset.Weights {
 		weights[k] = v
+	}
+	// Restoration: Spirit, MP5, Intellect and crit come from the model on this character's sheet
+	// (upgrade.ComputeResto) for the chosen content.
+	var model any
+	switch q.Get("preset") {
+	case "resto":
+		m, err := restoModel(c, q.Get("content"))
+		if err != nil {
+			fail(w, 422, fmt.Errorf("can't work out Restoration weights for this character: %w", err))
+			return
+		}
+		for k, v := range m.weights {
+			weights[k] = v
+		}
+		model = m
+	default:
+		m, err := feralModel(c, q.Get("content"))
+		if err != nil {
+			fail(w, 422, fmt.Errorf("can't work out Feral weights for this character: %w", err))
+			return
+		}
+		for k, v := range m.weights {
+			weights[k] = v
+		}
+		model = m
+	}
+	base := map[string]float64{} // before the page's own edits: what an edit is compared with
+	for k, v := range weights {
+		base[k] = v
 	}
 	for k := range q {
 		if stat, ok := strings.CutPrefix(k, "w_"); ok {
@@ -406,17 +485,12 @@ func (s *Server) apiUpgrades(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	c, err := s.loadCharacter(r.Context(), slug, q.Get("fresh") == "1")
-	if err != nil {
-		fail(w, 502, err)
-		return
-	}
 	cands, err := s.candidates(r.Context())
 	if err != nil {
 		fail(w, 500, err)
 		return
 	}
-	o := upgrade.Options{Level: c.Level, MinGain: 3, HealthPerSt: 10}
+	o := upgrade.Options{Level: c.Level, MinGain: 3, HealthPerSt: 10, Ignore: preset.Ignore}
 	if c.Race == "Tauren" {
 		o.HealthPerSt = 10.5 // Endurance (guide 1)
 	}
@@ -433,5 +507,130 @@ func (s *Server) apiUpgrades(w http.ResponseWriter, r *http.Request) {
 		o.MaxPrice = int64(v * 10000)
 	}
 	writeJSON(w, map[string]any{"character": c, "preset": preset, "rows": upgrade.Find(c.Equipped, cands, weights, o), "weights": weights,
-		"candidates": len(cands), "checked": upgrade.CheckedSlots()})
+		"candidates": len(cands), "checked": upgrade.CheckedSlots(), "model": model, "base_weights": base})
+}
+
+// feralModelOut is the cat DPS model's result for the page: the weights it set and why.
+type feralModelOut struct {
+	Kind    string                `json:"kind"` // "feral"
+	Content string                `json:"content"`
+	Profile upgrade.CatProfile    `json:"profile"`
+	Sheet   map[string]float64    `json:"sheet"` // Cat Form inputs worked out from the armory
+	Talents string                `json:"talents"`
+	Result  upgrade.CatWeightsOut `json:"result"`
+	weights map[string]float64
+}
+
+// feralModel runs the cat model on the character. The armory sheet is caster form, so the Cat
+// Form values follow the spec: AP = 2×Str (×Heart of the Wild in cat) + Agi + 2×level − 20 +
+// Predatory Strikes (0.5×rank×level) + gear AP; crit = sheet crit + Sharpened Claws (3%/rank) +
+// Leader of the Pack (3%, its tooltip); hit from gear rating (10 = 1%); weapon DPS from the main hand.
+func feralModel(c *character, content string) (feralModelOut, error) {
+	prof, ok := upgrade.CatProfiles[content]
+	if !ok {
+		content, prof = "dungeon", upgrade.CatProfiles["dungeon"]
+	}
+	talents, tsrc := upgrade.DefaultFeralTalents(c.Level), "default levelling build"
+	if g, ok := c.Specs["Feral Combat"]; ok && len(g.Talents) > 0 {
+		talents, tsrc = g.Talents, "Feral talents from the armory"
+	}
+	L := float64(c.Level)
+	var gearAP, hitRating, wdps float64
+	for slot, items := range c.Equipped {
+		for _, it := range items {
+			gearAP += it.Stats["ATTACK_POWER"]
+			hitRating += it.Stats["HIT_RATING"]
+			if slot == "MAIN_HAND" {
+				wdps = math.Max(wdps, it.DPS)
+			}
+		}
+	}
+	str := c.Stats["strength"] * (1 + 0.02*float64(talents[upgrade.HotW]))
+	ap := 2*str + c.Stats["agility"] + 2*L - 20 + 0.5*float64(talents[upgrade.PredatoryStrikes])*L + gearAP
+	crit := c.Stats["melee_crit"] + 3*float64(talents[upgrade.SharpenedClaws]) + 3*float64(talents[upgrade.LeaderOfThePack])
+	in := upgrade.CatInputs{Level: c.Level, Delta: prof.Delta, Armor: 60 * float64(c.Level+prof.Delta), AP: ap, CritPct: crit,
+		HitPct: hitRating / 10, WeaponDPS: wdps, Behind: prof.Behind, Rake: prof.Rake, RipShare: prof.RipShare, Talents: talents}
+	res, err := upgrade.CatWeights(in)
+	if err != nil {
+		return feralModelOut{}, err
+	}
+	return feralModelOut{Kind: "feral", Content: content, Profile: prof, Talents: tsrc, Result: res,
+		Sheet: map[string]float64{"level": L, "ap": ap, "crit": crit, "hit": in.HitPct, "wdps": wdps, "armor": in.Armor},
+		// Crit and hit are per 1%; items carry rating at 14 and 10 per 1% (client combat ratings).
+		// No listed item carries expertise or haste, so those weights are shown but not applied.
+		weights: map[string]float64{"STRENGTH": res.Str, "AGILITY": res.Agi, "CRIT_RATING": res.Crit / 14,
+			"HIT_RATING": res.Hit / 10, "DPS": res.WeaponDPS}}, nil
+}
+
+// restoModelOut is the Restoration model's result for the page: the weights it set and why.
+type restoModelOut struct {
+	Kind    string               `json:"kind"` // "resto"
+	Content string               `json:"content"`
+	Profile upgrade.Profile      `json:"profile"`
+	Sheet   map[string]float64   `json:"sheet"` // the inputs taken from the armory
+	Talents string               `json:"talents"`
+	Result  upgrade.RestoWeights `json:"result"`
+	weights map[string]float64
+}
+
+// restoModel runs upgrade.ComputeResto on the character's sheet: level, Intellect, Spirit, spell
+// crit and max mana from the armory statistics, +healing and MP5 summed from the equipped gear.
+func restoModel(c *character, content string) (restoModelOut, error) {
+	prof, ok := upgrade.RestoProfiles[content]
+	if !ok {
+		content, prof = "dungeon", upgrade.RestoProfiles["dungeon"]
+	}
+	in := upgrade.DefaultRestoInputs(c.Level, prof)
+	in.Int, in.Spirit, in.CritPct, in.ManaOverride = c.Stats["intellect"], c.Stats["spirit"], c.Stats["spell_crit"], c.Stats["power"]
+	talents := "default levelling build"
+	if resto, ok := c.Specs["Restoration"]; ok && len(resto.Talents) > 0 {
+		in.Talents, talents = resto.Talents, "Restoration talents from the armory"
+		if !resto.Active {
+			// The armory's sheet is computed with the active (other) spec's talents: rescale
+			// Intellect and Spirit to the Resto group's Heart of the Wild (+2%/rank) and Living
+			// Spirit (+5%/rank), and the mana pool by 15 per Intellect point gained.
+			var act map[upgrade.Talent]int
+			for _, g := range c.Specs {
+				if g.Active {
+					act = g.Talents
+				}
+			}
+			intel := in.Int / (1 + 0.02*float64(act[upgrade.HotW])) * (1 + 0.02*float64(resto.Talents[upgrade.HotW]))
+			in.ManaOverride += 15 * (intel - in.Int)
+			in.Int = intel
+			in.Spirit = in.Spirit / (1 + 0.05*float64(act[upgrade.LivingSpirit])) * (1 + 0.05*float64(resto.Talents[upgrade.LivingSpirit]))
+			talents += " (sheet rescaled from the active spec)"
+		}
+	}
+	for _, items := range c.Equipped {
+		for _, it := range items {
+			in.HP += it.Stats["SPELL_HEALING_DONE"] + it.Stats["SPELL_POWER"]
+			in.MP5 += it.Stats["MANA_REGENERATION"]
+		}
+	}
+	res, err := upgrade.ComputeResto(in)
+	if err != nil {
+		return restoModelOut{}, err
+	}
+	return restoModelOut{Kind: "resto", Content: content, Profile: prof, Result: res, Talents: talents,
+		Sheet: map[string]float64{"level": float64(in.Level), "int": in.Int, "spirit": in.Spirit, "hp": in.HP,
+			"mp5": in.MP5, "crit": in.CritPct, "mana": in.ManaOverride},
+		// Crit is per 1%; items carry rating at 14 per 1% (client combat ratings table).
+		weights: map[string]float64{"SPELL_HEALING_DONE": res.HP, "SPELL_POWER": res.HP, "SPIRIT": res.Spirit,
+			"MANA_REGENERATION": res.MP5, "INTELLECT": res.Int, "CRIT_RATING": res.Crit / 14}}, nil
+}
+
+// apiUpgradeSpecs lists the specs the Upgrades page offers, for its picker.
+func (s *Server) apiUpgradeSpecs(w http.ResponseWriter, r *http.Request) {
+	type spec struct {
+		Key  string `json:"key"`
+		Name string `json:"name"`
+		Icon string `json:"icon"`
+	}
+	out := []spec{}
+	for k, p := range upgrade.Presets {
+		out = append(out, spec{k, p.Name, p.Icon})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	writeJSON(w, out)
 }

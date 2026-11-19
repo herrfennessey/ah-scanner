@@ -128,7 +128,13 @@ function previewLines(p) {
 function coins(sp) {
   return sp?.value ? `<div class="tl tl-sell">Sell Price: ${money(sp.value)}</div>` : "";
 }
-const STAT_FULL = { STRENGTH: "Strength", AGILITY: "Agility", STAMINA: "Stamina", INTELLECT: "Intellect", SPIRIT: "Spirit", ATTACK_POWER: "Attack Power" };
+const STAT_FULL = { STRENGTH: "Strength", AGILITY: "Agility", STAMINA: "Stamina", INTELLECT: "Intellect", SPIRIT: "Spirit", ATTACK_POWER: "Attack Power",
+  RANGED_ATTACK_POWER: "Ranged Attack Power", CRIT_RATING: "Critical Strike", HIT_RATING: "Hit", SPELL_HEALING_DONE: "Spell Healing",
+  SPELL_DAMAGE_DONE: "Spell Damage", SPELL_POWER: "Spell Power", MANA_REGENERATION: "Mana Regeneration per 5 sec", DEFENSE_SKILL_RATING: "Defense",
+  DODGE_RATING: "Dodge", EXTRA_ARMOR: "Armor", FIRE_RESISTANCE: "Fire Resistance", FROST_RESISTANCE: "Frost Resistance",
+  SHADOW_RESISTANCE: "Shadow Resistance", NATURE_RESISTANCE: "Nature Resistance", ARCANE_RESISTANCE: "Arcane Resistance",
+  BONUS_STAT_FIRE_DAMAGE_DONE: "Fire Damage", BONUS_STAT_NATURE_DAMAGE_DONE: "Nature Damage", BONUS_STAT_FROST_DAMAGE_DONE: "Frost Damage",
+  BONUS_STAT_SHADOW_DAMAGE_DONE: "Shadow Damage" };
 function renderItemTip(t) {
   const p = t.preview || {};
   const q = t.preview ? qualityOf(p.quality) : t.quality;
@@ -975,8 +981,13 @@ const DOLL_NAME = { HEAD: "Head", NECK: "Neck", SHOULDER: "Shoulder", BACK: "Bac
   TRINKET_2: "Trinket", MAIN_HAND: "Main hand", OFF_HAND: "Off hand", RANGED: "Idol / ranged" };
 // upgrade rows use grouped slots; map a doll slot to its group
 const dollGroup = (k) => k.startsWith("FINGER") ? "FINGER" : k.startsWith("TRINKET") ? "TRINKET" : k === "HANDS" ? "HAND" : k;
-const WEIGHT_ORDER = ["DPS", "STRENGTH", "AGILITY", "ATTACK_POWER", "CRIT_RATING", "HIT_RATING", "STAMINA", "INTELLECT", "SPIRIT"];
-const STAT_SHORT = { DPS: "DPS", STRENGTH: "Str", AGILITY: "Agi", STAMINA: "Sta", INTELLECT: "Int", SPIRIT: "Spi", ATTACK_POWER: "AP", CRIT_RATING: "Crit", HIT_RATING: "Hit" };
+const WEIGHT_ORDER = ["DPS", "SPELL_HEALING_DONE", "SPELL_POWER", "MANA_REGENERATION", "STRENGTH", "AGILITY", "ATTACK_POWER", "CRIT_RATING", "HIT_RATING", "STAMINA", "INTELLECT", "SPIRIT"];
+const STAT_SHORT = { DPS: "DPS", STRENGTH: "Str", AGILITY: "Agi", STAMINA: "Sta", INTELLECT: "Int", SPIRIT: "Spi", ATTACK_POWER: "AP", CRIT_RATING: "Crit", HIT_RATING: "Hit",
+  SPELL_HEALING_DONE: "Heal", SPELL_DAMAGE_DONE: "Spell dmg", SPELL_POWER: "SP", MANA_REGENERATION: "MP5", HEALTH_REGEN: "HP5" };
+let upSpecs = null; // [{key, name, icon}] from /api/upgrades/specs
+// Edited weights per spec.
+const weightsKey = (p) => `upWeights:${p}`;
+const CONTENT = { dungeon: "Dungeon", questing: "Questing", boss: "Boss" };
 function statLine(it) {
   const parts = Object.entries(it.stats || {}).filter(([, v]) => v).map(([k, v]) => `+${v} ${STAT_SHORT[k] || k.toLowerCase().replace(/_/g, " ")}`);
   if (it.dps) parts.unshift(`${it.dps.toFixed(1)} dps`);
@@ -1027,7 +1038,7 @@ function upgradeList(filter, doll, rows) {
     <div class="up-main">
       <a class="adv-item q${x.quality}" href="${itemHref(x)}">${esc(x.name)}</a>
       <div class="item-sub">${filter ? "" : `${SLOT_NAME[r.slot] || r.slot} · `}${x.req_level > 1 ? `lvl ${x.req_level} · ` : ""}${statLine(x)}${r.ahead ? ` · <span class="tag tag-hot">level ${x.req_level}</span>` : ""}</div>
-      <div class="up-deltas">${r.health ? `<span>${signed(r.health)} health</span>` : ""}${r.mana ? `<span>${signed(r.mana)} mana</span>` : ""}${r.spirit ? `<span>${signed(r.spirit)} spirit</span>` : ""}${(x.flags || []).map((f) => `<span class="vol">${esc(f)}</span>`).join("")}</div>
+      <div class="up-deltas">${r.health ? `<span>${signed(r.health)} health</span>` : ""}${r.mana ? `<span>${signed(r.mana)} mana</span>` : ""}${r.spirit ? `<span>${signed(r.spirit)} spirit</span>` : ""}${[...(x.flags || []), ...(r.unscored || []).map((k) => `${(STAT_FULL[k] || k).toLowerCase()} not scored`)].map((f) => `<span class="vol">${esc(f)}</span>`).join("")}</div>
     </div>
     <div class="up-num"><div class="line"><b>+${r.gain}</b><small>${r.per_gold}/g</small></div><div class="line">${money(x.price)}<small>${factionName(x.house)}</small></div></div>
   </li>`; }).join("")}</ol>${list.length > 60 ? `<p class="fine">Top 60 of ${list.length}. Raise the minimum gain or set a max price to narrow it.</p>` : ""}`;
@@ -1042,15 +1053,44 @@ const INV_NAME = { HEAD: "head", NECK: "neck", SHOULDER: "shoulder", CLOAK: "bac
 function checkedLine() {
   return `<p class="fine up-checked" title="Solved from 663 fixed-stat items: one budget column reproduces Blizzard's stats for 100% of each slot's items.">Suffix stats are exact for every slot except trinkets, idols, thrown and off-hand weapons (≈).</p>`;
 }
+// specLabel is the spec picker's face: the spec's spell icon and name.
+function specLabel(key) {
+  const sp = (upSpecs || []).find((x) => x.key === key);
+  return sp ? `<img src="${esc(sp.icon)}" alt=""><span>${esc(sp.name)}</span><i aria-hidden="true">▾</i>` : `<span>Spec</span><i aria-hidden="true">▾</i>`;
+}
+// A click outside the spec picker closes it.
+document.addEventListener("click", (e) => { const p = $("#up-spec"); if (p?.open && !p.contains(e.target)) p.open = false; });
 let upGen = 0; // bumped by every Upgrades request and page render
+const MODEL_STATS = ["SPIRIT", "MANA_REGENERATION", "INTELLECT", "CRIT_RATING", "STRENGTH", "AGILITY", "HIT_RATING", "DPS"];
+// modelLine explains the Restoration weights: the sheet they came from and what each is made of.
+function modelLine(m) {
+  if (m.kind === "feral") return feralLine(m);
+  const r = m.result, p = r.Parts, sh = m.sheet, n = (x) => (+x).toFixed(2);
+  return `<p class="fine up-model"><b>${esc(m.profile.Name)}</b> (${m.profile.T} s per mana bar, out of mana ${Math.round(m.profile.Pressure * 100)}% of the time):
+    Intellect ${n(r.Int)} = crit ${n(p.intCrit)} + mana ${n(p.intMana)} · Spirit ${n(r.Spirit)} = Bloom ${n(p.spiBloom)} + regen ${n(p.spiRegen)} + Innervate ${n(p.spiInn)} ·
+    MP5 ${n(r.MP5)} · crit ${n(r.Crit)} per 1%. From level ${sh.level}, ${Math.round(sh.mana)} mana, ${Math.round(sh.int)} Int, ${Math.round(sh.spirit)} Spi,
+    +${Math.round(sh.hp)} healing, ${Math.round(sh.mp5)} MP5, ${n(sh.crit)}% crit; ${esc(m.talents)}.</p>`;
+}
+// feralLine explains the Feral weights: the fight, the Cat Form values and each weight.
+function feralLine(m) {
+  const r = m.result, p = m.profile, sh = m.sheet, n = (x) => (+x).toFixed(2);
+  const fight = `target ${p.Delta > 0 ? "+" + p.Delta : p.Delta === 0 ? "your level" : p.Delta}, ${Math.round(p.Behind * 100)}% from behind${p.Rake ? ", Rake" : ""}, ${p.RipShare >= 1 ? "Rip finishers" : p.RipShare > 0 ? `Rip ${Math.round(p.RipShare * 100)}% of finishers` : "Bite finishers"}`;
+  return `<p class="fine up-model"><b>${esc(p.Name)}</b> (${fight}): about <b>${Math.round(r.DPS)} DPS</b> in cat. Per point, against 1 attack power:
+    Strength ${n(r.Str)} · Agility ${n(r.Agi)} · crit ${n(r.Crit)} per 1% · hit ${n(r.Hit)} per 1% · weapon DPS ${n(r.WeaponDPS)} per 1 DPS
+    (expertise ${n(r.Exp)}, haste ${n(r.Haste)} per 1%: no item listed carries them). Cat Form from your sheet: ${Math.round(sh.ap)} AP,
+    ${n(sh.crit)}% crit, ${n(sh.hit)}% hit, ${n(sh.wdps)} weapon DPS, target armor ${Math.round(sh.armor)}; ${esc(m.talents)}.</p>`;
+}
 async function renderUpgrades() {
   upGen++;
-  const f = { buyOnce: store.get("upBuyOnce2", false), character: store.get("upChar", "Sine Wave"), ahead: store.get("upAhead", false), minGain: store.get("upMinGain", 3), maxPrice: store.get("upMaxPrice", "") };
+  const f = { content: store.get("upContent", "dungeon"), preset: store.get("upPreset", "feral"), buyOnce: store.get("upBuyOnce", false), character: store.get("upChar", "Sine Wave"), ahead: store.get("upAhead", false), minGain: store.get("upMinGain", 3), maxPrice: store.get("upMaxPrice", "") };
   if (f.character === "sine-wave") f.character = "Sine Wave";
   let open = "";
   $("#view").innerHTML = `
     <form class="up-form" id="up-form">
       <label>Character <input name="character" value="${esc(f.character)}" size="16" placeholder="First Last"></label>
+      <input type="hidden" name="preset" value="${esc(f.preset)}">
+      <details class="up-spec" id="up-spec"><summary aria-label="Spec">${specLabel(f.preset)}</summary><div class="up-spec-menu" role="listbox"></div></details>
+      <label class="up-content" title="The weights are worked out from your sheet for this kind of content: for Feral the target's level, how often you're behind it and your finishers; for Restoration how long you heal per mana bar and how often you run out.">Content <select name="content">${Object.entries(CONTENT).map(([k, v]) => `<option value="${k}" ${f.content === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
       <label title="Biggest upgrade first instead of the most per gold, and skip items more than 10 levels below you: buy once, not every few levels."><input type="checkbox" name="buyOnce" ${f.buyOnce ? "checked" : ""}> Buy once</label>
       <label><input type="checkbox" name="ahead" ${f.ahead ? "checked" : ""}> include the next 3 levels</label>
       <label>Min gain <input name="minGain" type="number" step="1" value="${esc(String(f.minGain))}" style="width:4em"></label>
@@ -1058,6 +1098,7 @@ async function renderUpgrades() {
       <button class="btn">Load</button>
       <span class="up-help" tabindex="0" aria-label="How to use this">?<span class="up-tip" role="tooltip">
         <b>Name</b> as on the armory, e.g. Sine Wave.<br>
+        <b>Spec</b>: the gear compared is what you logged out in, so log out in that spec's set.<br>
         <b>Gain</b> = stat points over what you wear. <b>Buy once</b>: biggest upgrade first, nothing more than 10 levels below you; off: most gain per gold.<br>
         <b>Click a slot</b> to filter, ✕ to clear.<br>
         <b>≈</b> suffix stats not yet checked on real gear.</span></span>
@@ -1065,6 +1106,24 @@ async function renderUpgrades() {
     </form>
     <div id="up-out" aria-live="polite"></div>`;
   const form = $("#up-form");
+  // The spec picker: specs come from the server, so a new spec needs no change here.
+  const picker = $("#up-spec");
+  const drawSpecs = () => {
+    picker.querySelector("summary").innerHTML = specLabel(form.preset.value);
+    picker.querySelector(".up-spec-menu").innerHTML = (upSpecs || []).map((sp) => `<button type="button" role="option" data-spec="${esc(sp.key)}" aria-selected="${sp.key === form.preset.value}">
+      <img src="${esc(sp.icon)}" alt=""><span>${esc(sp.name)}</span></button>`).join("");
+  };
+  picker.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-spec]");
+    if (!b) return;
+    picker.open = false;
+    if (form.preset.value === b.dataset.spec) return;
+    form.preset.value = b.dataset.spec;
+    drawSpecs();
+    load();
+  });
+  if (upSpecs) drawSpecs();
+  else api("/api/upgrades/specs").then((list) => { upSpecs = list; if (picker.isConnected) drawSpecs(); }).catch(() => {});
   let d;
   const draw = () => {
     const out = $("#up-out"), c = d.character, doll = c.doll || {}, rows = d.rows || [];
@@ -1088,9 +1147,10 @@ async function renderUpgrades() {
         <h3 class="panel-title">Upgrades <span class="aside">${count(d.candidates)} usable items listed</span></h3>
         <form class="up-weights" id="up-weights" title="Points per stat point (weapon: per DPS). Hover a stat for where its weight comes from; edits are kept in this browser.">
           <span class="up-weights-name">${esc(d.preset.name)}</span>
-          ${WEIGHT_ORDER.filter((k) => k in d.weights).map((k) => `<label title="${esc(d.preset.sources[k] || "")}">${STAT_SHORT[k] || k}<input name="${k}" type="number" min="0" max="100" step="0.1" value="${+d.weights[k].toFixed(2)}"></label>`).join("")}
+          ${WEIGHT_ORDER.filter((k) => k in d.weights).map((k) => `<label title="${esc(d.model && MODEL_STATS.includes(k) ? `worked out from your sheet for ${d.model.profile.Name.toLowerCase()} content (see below)` : d.preset.sources[k] || "")}">${STAT_SHORT[k] || k}<input name="${k}" type="number" min="0" max="100" step="0.1" value="${+d.weights[k].toFixed(2)}"></label>`).join("")}
           <button type="button" class="up-reset" title="Back to the preset's weights">reset</button>
         </form>
+        ${d.model ? modelLine(d.model) : ""}
         ${checkedLine()}
         <div id="up-list">${upgradeList(open, doll, rows)}</div>
       </aside></div>`;
@@ -1099,14 +1159,14 @@ async function renderUpgrades() {
     const wf = $("#up-weights");
     wf.addEventListener("change", () => {
       const edited = {};
-      for (const el of wf.querySelectorAll("input")) if (el.value !== "" && +el.value !== +d.preset.weights[el.name].toFixed(2)) edited[el.name] = +el.value; // inputs show 2 decimals
-      store.set("upWeights", edited);
+      for (const el of wf.querySelectorAll("input")) if (el.value !== "" && +el.value !== +(d.base_weights || d.preset.weights)[el.name].toFixed(2)) edited[el.name] = +el.value; // inputs show 2 decimals
+      store.set(weightsKey(f.preset), edited);
       load();
     });
-    wf.querySelector(".up-reset").addEventListener("click", () => { store.set("upWeights", {}); load(); });
+    wf.querySelector(".up-reset").addEventListener("click", () => { store.set(weightsKey(f.preset), {}); load(); });
   };
   const load = async (fresh = false) => {
-    f.character = form.character.value.trim(); f.buyOnce = form.buyOnce.checked; store.set("upBuyOnce2", f.buyOnce); f.ahead = form.ahead.checked; f.minGain = form.minGain.value; f.maxPrice = form.maxPrice.value;
+    f.character = form.character.value.trim(); f.preset = form.preset.value; store.set("upPreset", f.preset); f.content = form.content.value; store.set("upContent", f.content); f.buyOnce = form.buyOnce.checked; store.set("upBuyOnce", f.buyOnce); f.ahead = form.ahead.checked; f.minGain = form.minGain.value; f.maxPrice = form.maxPrice.value;
     store.set("upChar", f.character); store.set("upAhead", f.ahead); store.set("upMinGain", f.minGain); store.set("upMaxPrice", f.maxPrice);
     const out = $("#up-out");
     out.innerHTML = `<div class="panel"><div class="empty-state">Loading ${esc(f.character)} from the armory and scoring the auction house…</div></div>`;
@@ -1115,8 +1175,8 @@ async function renderUpgrades() {
     const gen = ++upGen;
     let res;
     try {
-      const wq = Object.entries(store.get("upWeights", {})).map(([k, v]) => `&w_${k}=${encodeURIComponent(v)}`).join("");
-      res = await api(`/api/upgrades?character=${encodeURIComponent(f.character)}${fresh ? "&fresh=1" : ""}&buy_once=${f.buyOnce ? 1 : 0}&ahead=${f.ahead ? 1 : 0}&min_gain=${encodeURIComponent(f.minGain)}&max_price=${encodeURIComponent(f.maxPrice)}${wq}`);
+      const wq = Object.entries(store.get(weightsKey(f.preset), {})).map(([k, v]) => `&w_${k}=${encodeURIComponent(v)}`).join("");
+      res = await api(`/api/upgrades?character=${encodeURIComponent(f.character)}${fresh ? "&fresh=1" : ""}&preset=${encodeURIComponent(f.preset)}&content=${encodeURIComponent(f.content)}&buy_once=${f.buyOnce ? 1 : 0}&ahead=${f.ahead ? 1 : 0}&min_gain=${encodeURIComponent(f.minGain)}&max_price=${encodeURIComponent(f.maxPrice)}${wq}`);
     } catch (err) {
       if (gen === upGen && out.isConnected) out.innerHTML = `<div class="panel">${emptyState("Couldn't load that character", esc(err.message))}</div>`;
       return;
@@ -1126,7 +1186,7 @@ async function renderUpgrades() {
     draw();
   };
   form.addEventListener("submit", (e) => { e.preventDefault(); load(true); }); // Load: always from the armory
-  form.addEventListener("change", (e) => { if (e.target.type === "checkbox") load(); });
+  form.addEventListener("change", (e) => { if (e.target.type === "checkbox" || e.target.name === "preset" || e.target.name === "content") load(); });
   load();
 }
 async function renderSupply() {

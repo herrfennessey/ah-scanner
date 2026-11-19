@@ -95,7 +95,7 @@ func item(id int64, inv string, price int64, req int, stats map[string]float64) 
 }
 
 func TestFindRanksAndFilters(t *testing.T) {
-	w := Presets["feral"].Weights
+	w := map[string]float64{"AGILITY": 2, "STRENGTH": 2, "STAMINA": 1} // fixed test weights, not a preset
 	eq := map[string][]Item{
 		"HEAD":      {item(1, "HEAD", 0, 30, map[string]float64{"AGILITY": 5})},
 		"FINGER":    {item(2, "FINGER", 0, 30, map[string]float64{"STAMINA": 10}), item(3, "FINGER", 0, 30, map[string]float64{"STRENGTH": 2})},

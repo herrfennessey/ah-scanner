@@ -322,3 +322,24 @@ func TestItemListsSuffixVariants(t *testing.T) {
 		t.Fatalf("item %+v", out.Item)
 	}
 }
+
+func TestUpgradeSpecsListsPresetsWithIcons(t *testing.T) {
+	srv, _ := fixture(t, "")
+	resp, err := http.Get(srv.URL + "/api/upgrades/specs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var specs []struct{ Key, Name, Icon string }
+	json.NewDecoder(resp.Body).Decode(&specs)
+	keys := map[string]bool{}
+	for _, s := range specs {
+		if s.Name == "" || s.Icon == "" {
+			t.Errorf("%+v lacks a name or icon", s)
+		}
+		keys[s.Key] = true
+	}
+	if !keys["feral"] || !keys["resto"] {
+		t.Fatalf("%+v", specs)
+	}
+}

@@ -21,29 +21,50 @@ type alloc struct{ stat, share int }
 // Preset is a named set of stat weights in score points (AP for Feral).
 type Preset struct {
 	Name    string             `json:"name"`
+	Icon    string             `json:"icon"`    // the spec's spell icon (client SpellMisc.SpellIconFileDataID)
 	Weights map[string]float64 `json:"weights"` // stat type (STRENGTH, …) or "DPS"
 	Sources map[string]string  `json:"sources"`
+	// Ignore lists stats the spec doesn't use at all: not scored and not flagged as "not
+	// scored" either (a healer doesn't care that a robe also has spell damage).
+	Ignore []string `json:"ignore,omitempty"`
 }
 
-// Presets ships Feral (cat); the weights and their sources are in the design doc.
+// Presets: Feral (cat) and Restoration, each weight with its source. A new spec is a preset here
+// plus its model (see internal/web: the page lists the specs from /api/upgrades/specs). Icons are
+// the client's SpellIconFileDataID on Blizzard's icon server: Cat Form's matches its spell media.
 var Presets = map[string]Preset{
+	// Feral (cat): attack power is the unit. Strength, Agility, crit, hit and weapon DPS are worked
+	// out per character by the cat DPS model in feral.go (internal/web feralModel). Stamina is the
+	// player's survivability choice for solo levelling, which the DPS model doesn't cover.
 	"feral": {
-		Name: "Feral (cat)",
-		Weights: map[string]float64{"DPS": 14, "STRENGTH": 2, "AGILITY": 2, "ATTACK_POWER": 1,
-			"CRIT_RATING": 20.0 / 14, "HIT_RATING": 2, "STAMINA": 1, "INTELLECT": 0, "SPIRIT": 0},
+		Name:    "Feral (cat)",
+		Icon:    "https://render.worldofwarcraft.com/forever-eu/icons/56/132115.jpg", // Cat Form (768)
+		Weights: map[string]float64{"ATTACK_POWER": 1, "STAMINA": 1, "INTELLECT": 0, "SPIRIT": 0},
 		Sources: map[string]string{
-			"DPS":          "14 AP = 1 weapon DPS (guide 2)",
-			"STRENGTH":     "1 Str = 2 AP (guides 1 and 2)",
-			"AGILITY":      "Agility = Strength (guide 1)",
-			"ATTACK_POWER": "unit",
-			"CRIT_RATING":  "1% crit ≈ 20 AP (guide 1), 14 rating per 1% (client combat ratings)",
-			// 10 rating per 1% is the client's combat ratings table (gametables/combatratings.txt,
-			// build 1.60.1.70959, flat at every level); 1% hit ≈ 20 AP is our estimate.
-			"HIT_RATING": "estimate: 1% hit ≈ 20 AP, 10 rating per 1%; upper bound below the raid cap",
-			"STAMINA":    "our default for solo levelling: half a Strength point (guide 1: last for cat DPS, first for tanking; solo you take every hit). Adjust to taste",
-			"INTELLECT":  "0 by default: mana for shifting out and healing, no damage (guide 1). Adjust to taste",
-			"SPIRIT":     "0 by default: out-of-combat regeneration, no damage (guide 1). Adjust to taste",
+			"ATTACK_POWER": "the unit: +1 attack power",
+			"STAMINA":      "your survivability choice for solo levelling (the DPS model doesn't value it)",
+			"INTELLECT":    "no damage: mana for shifting out and healing",
+			"SPIRIT":       "no damage: out-of-combat regeneration",
 		},
+		Ignore: []string{"SPELL_POWER", "SPELL_HEALING_DONE", "SPELL_DAMAGE_DONE", "MANA_REGENERATION",
+			"BONUS_STAT_FIRE_DAMAGE_DONE", "BONUS_STAT_FROST_DAMAGE_DONE", "BONUS_STAT_SHADOW_DAMAGE_DONE",
+			"BONUS_STAT_NATURE_DAMAGE_DONE"},
+	},
+	// Restoration: healing power is the unit. Spirit, MP5, Intellect and crit are worked out per
+	// character by the model in resto.go (internal/web restoModel); Stamina is ignored, as there.
+	// Forever items split healing power into Spell Healing and Spell Power (which covers healing
+	// too), so both count as healing power.
+	"resto": {
+		Name:    "Restoration",
+		Icon:    "https://render.worldofwarcraft.com/forever-eu/icons/56/136041.jpg", // Healing Touch (5185)
+		Weights: map[string]float64{"SPELL_HEALING_DONE": 1, "SPELL_POWER": 1},
+		Sources: map[string]string{
+			"SPELL_HEALING_DONE": "the unit: +1 healing power",
+			"SPELL_POWER":        "spell power covers healing: counts as healing power",
+		},
+		Ignore: []string{"STRENGTH", "AGILITY", "ATTACK_POWER", "HIT_RATING", "SPELL_DAMAGE_DONE", "STAMINA",
+			"BONUS_STAT_FIRE_DAMAGE_DONE", "BONUS_STAT_FROST_DAMAGE_DONE", "BONUS_STAT_SHADOW_DAMAGE_DONE",
+			"BONUS_STAT_NATURE_DAMAGE_DONE", "HEALTH_REGEN"},
 	},
 }
 
@@ -226,7 +247,23 @@ func Check(invType, variant string, ilvl, quality int, base, actual map[string]f
 // bonusStat names ItemBonus stat ids, derived from the suffix names in the same client data
 // ("of Agility" = 3, "of Strength" = 4, "of Intellect" = 5, "of Spirit" = 6, "of Stamina" = 7,
 // "of Power" = 38).
-var bonusStat = map[int]string{3: "AGILITY", 4: "STRENGTH", 5: "INTELLECT", 6: "SPIRIT", 7: "STAMINA", 38: "ATTACK_POWER"}
+var bonusStat = map[int]string{3: "AGILITY", 4: "STRENGTH", 5: "INTELLECT", 6: "SPIRIT", 7: "STAMINA", 38: "ATTACK_POWER",
+	// The rest are matched like the slot columns: for each id, one Blizzard stat type equals the
+	// computed value on every fixed-stat item carrying it (2026-11-18): 41 Spell Healing 36/36,
+	// 42 Spell Damage 36/36, 45 Spell Power 188/188, 32 crit 23/23, 31 hit 9/9, 43 MP5 1/1 …
+	// Ids with no samples (46 "of Regeneration", 84 holy, 89 arcane) stay unnamed.
+	12: "DEFENSE_SKILL_RATING", 13: "DODGE_RATING", 31: "HIT_RATING", 32: "CRIT_RATING", 39: "RANGED_ATTACK_POWER",
+	41: "SPELL_HEALING_DONE", 42: "SPELL_DAMAGE_DONE", 43: "MANA_REGENERATION", 45: "SPELL_POWER", 50: "EXTRA_ARMOR",
+	51: "FIRE_RESISTANCE", 52: "FROST_RESISTANCE", 54: "SHADOW_RESISTANCE", 55: "NATURE_RESISTANCE", 56: "ARCANE_RESISTANCE",
+	85: "BONUS_STAT_FIRE_DAMAGE_DONE", 86: "BONUS_STAT_NATURE_DAMAGE_DONE", 87: "BONUS_STAT_FROST_DAMAGE_DONE",
+	88: "BONUS_STAT_SHADOW_DAMAGE_DONE"}
+
+// statOrder is the display order of suffix stats in tooltips.
+var statOrder = []string{"STRENGTH", "AGILITY", "STAMINA", "INTELLECT", "SPIRIT", "ATTACK_POWER", "RANGED_ATTACK_POWER",
+	"CRIT_RATING", "HIT_RATING", "SPELL_HEALING_DONE", "SPELL_DAMAGE_DONE", "SPELL_POWER", "MANA_REGENERATION",
+	"DEFENSE_SKILL_RATING", "DODGE_RATING", "EXTRA_ARMOR", "FIRE_RESISTANCE", "FROST_RESISTANCE", "SHADOW_RESISTANCE",
+	"NATURE_RESISTANCE", "ARCANE_RESISTANCE", "BONUS_STAT_FIRE_DAMAGE_DONE", "BONUS_STAT_NATURE_DAMAGE_DONE",
+	"BONUS_STAT_FROST_DAMAGE_DONE", "BONUS_STAT_SHADOW_DAMAGE_DONE"}
 
 // SuffixStats computes a variant's suffix stats. verified is false when the slot column is still
 // a guess; unknown counts bonus stats the score can't use (spell power, healing, resistances…).
@@ -293,7 +330,7 @@ func SuffixLines(variant string, ilvl, quality int, invType string) (lines []Suf
 	if at == nil {
 		return nil, false, 0
 	}
-	for _, name := range []string{"STRENGTH", "AGILITY", "STAMINA", "INTELLECT", "SPIRIT", "ATTACK_POWER"} {
+	for _, name := range statOrder {
 		v, ok := at[name]
 		if !ok {
 			continue
@@ -347,6 +384,9 @@ type Row struct {
 	Mana     float64 `json:"mana"`
 	Spirit   float64 `json:"spirit"`
 	Ahead    bool    `json:"ahead"` // can't be worn yet (next levels)
+	// Unscored lists stats the item has that the weights don't value (and the spec doesn't
+	// ignore), e.g. a resistance: shown so the gain isn't the whole story.
+	Unscored []string `json:"unscored,omitempty"`
 }
 
 // Options are the page's filters.
@@ -358,6 +398,7 @@ type Options struct {
 	BuyOnce     bool  // biggest gain first, and skip items far below the character's level
 	MaxBelow    int   // with BuyOnce: skip items requiring more than this many levels below
 	HealthPerSt float64
+	Ignore      []string // the preset's ignored stats (see Preset.Ignore)
 }
 
 // Find compares candidates with the equipped gear and returns upgrades, best gain per gold first.
@@ -392,7 +433,7 @@ func Find(equipped map[string][]Item, cands []Item, w map[string]float64, o Opti
 			Health:  (c.Stats["STAMINA"] - oldStats["STAMINA"]) * o.HealthPerSt,
 			Mana:    (c.Stats["INTELLECT"] - oldStats["INTELLECT"]) * 15, // 15 mana per Intellect (guide 1)
 			Spirit:  c.Stats["SPIRIT"] - oldStats["SPIRIT"],
-			Ahead:   c.ReqLevel > o.Level})
+			Ahead:   c.ReqLevel > o.Level, Unscored: unscored(c, w, o.Ignore)})
 	}
 	// Candidates arrive in map order: break ties fully so the list (and each slot's best) is stable.
 	sort.Slice(out, func(i, j int) bool {
@@ -412,6 +453,30 @@ func Find(equipped map[string][]Item, cands []Item, w map[string]float64, o Opti
 		return a.Item.Variant < b.Item.Variant
 	})
 	return out
+}
+
+// unscored names the stats of an item the weights give nothing for, minus the utility stats
+// (shown as columns) and the ones the spec ignores; known stats in display order, then the rest.
+func unscored(it Item, w map[string]float64, ignore []string) []string {
+	skip := map[string]bool{"STAMINA": true, "INTELLECT": true, "SPIRIT": true}
+	for _, k := range ignore {
+		skip[k] = true
+	}
+	listed := map[string]bool{}
+	var out, extra []string
+	for _, k := range statOrder {
+		listed[k] = true
+		if it.Stats[k] > 0 && w[k] == 0 && !skip[k] {
+			out = append(out, k)
+		}
+	}
+	for k, v := range it.Stats { // typed stats no suffix carries, e.g. HEALTH_REGEN
+		if v > 0 && w[k] == 0 && !skip[k] && !listed[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
 }
 
 func twoHanded(eq map[string][]Item) bool {
