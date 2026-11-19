@@ -93,14 +93,15 @@ func spellFlags(sp []apiSpell) []string {
 	return f
 }
 
-func statsOf(in []apiStat) (map[string]float64, []string) {
+// statsOf sums typed stats; the ones the weights don't value are named per row (upgrade.Row.Unscored).
+func statsOf(in []apiStat) map[string]float64 {
 	out := map[string]float64{}
 	for _, s := range in {
 		if s.Type.Type != "" {
 			out[s.Type.Type] += s.Value
 		}
 	}
-	return out, nil // stats the weights don't value are named per row (upgrade.Row.Unscored)
+	return out
 }
 
 func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*character, error) {
@@ -183,7 +184,8 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 		}
 	}
 	var stats map[string]json.RawMessage
-	if s.API.GetJSON(ctx, "/profile/wow/character/"+url.PathEscape(slug)+"/statistics", ns, &stats) == nil {
+	statsOK := s.API.GetJSON(ctx, "/profile/wow/character/"+url.PathEscape(slug)+"/statistics", ns, &stats) == nil
+	if statsOK {
 		for k, raw := range stats {
 			var n float64
 			var obj struct {
@@ -200,35 +202,10 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 			}
 		}
 	}
-	var specs struct {
-		Groups []struct {
-			Active bool `json:"is_active"`
-			Specs  []struct {
-				Spec struct {
-					Name string `json:"name"`
-				} `json:"specialization"`
-				Talents []struct {
-					Talent struct {
-						Name string `json:"name"`
-					} `json:"talent"`
-					Rank int `json:"talent_rank"`
-				} `json:"talents"`
-			} `json:"specializations"`
-		} `json:"specialization_groups"`
-	}
+	var specs specsResponse
 	c.Specs = map[string]specGroup{}
 	if s.API.GetJSON(ctx, "/profile/wow/character/"+url.PathEscape(slug)+"/specializations", ns, &specs) == nil {
-		for _, g := range specs.Groups {
-			for _, sp := range g.Specs {
-				sg := specGroup{Active: g.Active, Talents: map[upgrade.Talent]int{}}
-				for _, t := range sp.Talents {
-					if k, ok := talentByName[t.Talent.Name]; ok {
-						sg.Talents[k] = t.Rank
-					}
-				}
-				c.Specs[sp.Spec.Name] = sg
-			}
-		}
+		c.Specs = specGroups(specs)
 	}
 	for _, e := range eq.Items {
 		slot := e.Slot.Type
@@ -240,7 +217,7 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 		case slot == "HANDS":
 			slot = "HAND"
 		}
-		st, flags := statsOf(e.Stats)
+		st := statsOf(e.Stats)
 		var variant string
 		if len(e.Bonus) > 0 {
 			parts := make([]string, len(e.Bonus))
@@ -251,7 +228,7 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 		}
 		it := upgrade.Item{ID: e.Item.ID, Variant: variant, Name: e.Name,
 			Quality: qualities[e.Quality.Type], InvType: e.InvType.Type, Stats: st, DPS: e.Weapon.DPS.Value,
-			Flags: append(flags, spellFlags(e.Spells)...)}
+			Flags: spellFlags(e.Spells)}
 		s.Store.DB.QueryRowContext(ctx, `SELECT COALESCE(icon,'') FROM item WHERE id=?`, it.ID).Scan(&it.Icon)
 		if it.Icon == "" {
 			it.Icon = s.itemIcon(ctx, it.ID)
@@ -268,7 +245,9 @@ func (s *Server) loadCharacter(ctx context.Context, slug string, fresh bool) (*c
 		c.Doll[e.Slot.Type] = d
 		c.Equipped[slot] = append(c.Equipped[slot], it)
 	}
-	charCache.Store(slug, c)
+	if statsOK { // a failed /statistics isn't cached: the next request retries it
+		charCache.Store(slug, c)
+	}
 	return c, nil
 }
 
@@ -291,7 +270,7 @@ func (s *Server) checkSuffix(ctx context.Context, who, name string, it upgrade.I
 	if json.Unmarshal(tip, &t) != nil {
 		return
 	}
-	base, _ := statsOf(t.Stats)
+	base := statsOf(t.Stats)
 	if c, ok := upgrade.Check(it.InvType, it.Variant, ilvl, it.Quality, base, it.Stats, strings.TrimSpace(who)+": "+name); ok && c.Status != "checked" {
 		s.Log.Warn("suffix column", "inv_type", c.InvType, "status", c.Status, "column", c.Column, "by", c.By, "detail", c.Detail)
 	}
@@ -390,8 +369,7 @@ func (s *Server) candidates(ctx context.Context) ([]upgrade.Item, error) {
 		if json.Unmarshal([]byte(raw), &t) != nil {
 			continue
 		}
-		st, flags := statsOf(t.Stats)
-		tips[id] = &tip{ilvl, t.InvType.Type, t.Class.ID, t.Sub.ID, st, append(flags, spellFlags(t.Spells)...), t.Weapon.DPS.Value}
+		tips[id] = &tip{ilvl, t.InvType.Type, t.Class.ID, t.Sub.ID, statsOf(t.Stats), spellFlags(t.Spells), t.Weapon.DPS.Value}
 	}
 	rows.Close()
 	var out []upgrade.Item
@@ -526,6 +504,9 @@ type feralModelOut struct {
 // Predatory Strikes (0.5×rank×level) + gear AP; crit = sheet crit + Sharpened Claws (3%/rank) +
 // Leader of the Pack (3%, its tooltip); hit from gear rating (10 = 1%); weapon DPS from the main hand.
 func feralModel(c *character, content string) (feralModelOut, error) {
+	if err := needStats(c, "strength", "agility", "melee_crit"); err != nil {
+		return feralModelOut{}, err
+	}
 	prof, ok := upgrade.CatProfiles[content]
 	if !ok {
 		content, prof = "dungeon", upgrade.CatProfiles["dungeon"]
@@ -576,6 +557,9 @@ type restoModelOut struct {
 // restoModel runs upgrade.ComputeResto on the character's sheet: level, Intellect, Spirit, spell
 // crit and max mana from the armory statistics, +healing and MP5 summed from the equipped gear.
 func restoModel(c *character, content string) (restoModelOut, error) {
+	if err := needStats(c, "intellect", "spirit", "spell_crit"); err != nil {
+		return restoModelOut{}, err
+	}
 	prof, ok := upgrade.RestoProfiles[content]
 	if !ok {
 		content, prof = "dungeon", upgrade.RestoProfiles["dungeon"]
@@ -620,6 +604,29 @@ func restoModel(c *character, content string) (restoModelOut, error) {
 			"MANA_REGENERATION": res.MP5, "INTELLECT": res.Int, "CRIT_RATING": res.Crit / 14}}, nil
 }
 
+// needStats fails when the armory sheet lacks a stat a model reads: scoring with it as 0 would
+// rank the wrong purchases.
+func needStats(c *character, keys ...string) error {
+	var missing []string
+	for _, k := range keys {
+		if _, ok := c.Stats[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the armory sheet lacks %s (try Load again)", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// points is the ranks spent in a talent group's modelled talents.
+func points(t map[upgrade.Talent]int) (n int) {
+	for _, r := range t {
+		n += r
+	}
+	return n
+}
+
 // apiUpgradeSpecs lists the specs the Upgrades page offers, for its picker.
 func (s *Server) apiUpgradeSpecs(w http.ResponseWriter, r *http.Request) {
 	type spec struct {
@@ -633,4 +640,56 @@ func (s *Server) apiUpgradeSpecs(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, out)
+}
+
+// specsResponse is the armory's /specializations: one entry per dual-spec group.
+type specsResponse struct {
+	Groups []struct {
+		Active bool `json:"is_active"`
+		Specs  []struct {
+			Spec struct {
+				Name string `json:"name"`
+			} `json:"specialization"`
+			Talents []struct {
+				Talent struct {
+					Name string `json:"name"`
+				} `json:"talent"`
+				Rank int `json:"talent_rank"`
+			} `json:"talents"`
+		} `json:"specializations"`
+	} `json:"specialization_groups"`
+}
+
+// specGroups turns the armory's groups into the talents per spec. A group can list points in
+// several trees (a 7/34/10 Feral build has Heart of the Wild in the Restoration tree): its talents
+// are all of them, and it is named after the tree with the most points. If both groups are in one
+// spec, the one with more points spent wins, the active one on a tie.
+func specGroups(r specsResponse) map[string]specGroup {
+	out := map[string]specGroup{}
+	for _, g := range r.Groups {
+		sg := specGroup{Active: g.Active, Talents: map[upgrade.Talent]int{}}
+		name, most := "", -1
+		for _, sp := range g.Specs {
+			spent := 0
+			for _, t := range sp.Talents {
+				spent += t.Rank
+				if k, ok := talentByName[t.Talent.Name]; ok {
+					sg.Talents[k] += t.Rank
+				}
+			}
+			if spent > most {
+				name, most = sp.Spec.Name, spent
+			}
+		}
+		if name == "" {
+			continue
+		}
+		if old, ok := out[name]; ok {
+			if p, q := points(old.Talents), points(sg.Talents); p > q || p == q && old.Active {
+				continue
+			}
+		}
+		out[name] = sg
+	}
+	return out
 }

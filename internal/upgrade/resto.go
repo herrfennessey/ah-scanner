@@ -94,7 +94,9 @@ func ComputeResto(in RestoInputs) (RestoWeights, error) {
 	refl := reflectionShare[min(max(t[Reflection], 0), 3)]
 
 	maxMana := in.ManaOverride
-	if maxMana <= 0 {
+	// Max mana is never below base mana: a smaller sheet value isn't a mana pool (missing, or
+	// the energy or rage of a form), so calculate it instead.
+	if maxMana < restoBaseMana[L] {
 		maxMana = restoBaseMana[L] + math.Min(in.Int, 20) + 15*math.Max(in.Int-20, 0)
 	}
 	regenOut := in.RegenBase + in.SpiCoef*in.Spirit // mana/s outside the FSR

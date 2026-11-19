@@ -1038,7 +1038,7 @@ function upgradeList(filter, doll, rows) {
     <div class="up-main">
       <a class="adv-item q${x.quality}" href="${itemHref(x)}">${esc(x.name)}</a>
       <div class="item-sub">${filter ? "" : `${SLOT_NAME[r.slot] || r.slot} · `}${x.req_level > 1 ? `lvl ${x.req_level} · ` : ""}${statLine(x)}${r.ahead ? ` · <span class="tag tag-hot">level ${x.req_level}</span>` : ""}</div>
-      <div class="up-deltas">${r.health ? `<span>${signed(r.health)} health</span>` : ""}${r.mana ? `<span>${signed(r.mana)} mana</span>` : ""}${r.spirit ? `<span>${signed(r.spirit)} spirit</span>` : ""}${[...(x.flags || []), ...(r.unscored || []).map((k) => `${(STAT_FULL[k] || k).toLowerCase()} not scored`)].map((f) => `<span class="vol">${esc(f)}</span>`).join("")}</div>
+      <div class="up-deltas">${r.health ? `<span>${signed(r.health)} health</span>` : ""}${r.mana ? `<span>${signed(r.mana)} mana</span>` : ""}${r.spirit ? `<span>${signed(r.spirit)} spirit</span>` : ""}${[...(x.flags || []), ...(r.unscored || []).map((k) => `${(STAT_FULL[k] || k.replace(/_/g, " ")).toLowerCase()} not scored`)].map((f) => `<span class="vol">${esc(f)}</span>`).join("")}</div>
     </div>
     <div class="up-num"><div class="line"><b>+${r.gain}</b><small>${r.per_gold}/g</small></div><div class="line">${money(x.price)}<small>${factionName(x.house)}</small></div></div>
   </li>`; }).join("")}</ol>${list.length > 60 ? `<p class="fine">Top 60 of ${list.length}. Raise the minimum gain or set a max price to narrow it.</p>` : ""}`;
@@ -1061,7 +1061,8 @@ function specLabel(key) {
 // A click outside the spec picker closes it.
 document.addEventListener("click", (e) => { const p = $("#up-spec"); if (p?.open && !p.contains(e.target)) p.open = false; });
 let upGen = 0; // bumped by every Upgrades request and page render
-const MODEL_STATS = ["SPIRIT", "MANA_REGENERATION", "INTELLECT", "CRIT_RATING", "STRENGTH", "AGILITY", "HIT_RATING", "DPS"];
+// fromModel: the model set this weight (it isn't the preset's fixed value).
+const fromModel = (d, k) => !!d.model && d.base_weights && k in d.base_weights && d.base_weights[k] !== d.preset.weights[k];
 // modelLine explains the Restoration weights: the sheet they came from and what each is made of.
 function modelLine(m) {
   if (m.kind === "feral") return feralLine(m);
@@ -1147,7 +1148,7 @@ async function renderUpgrades() {
         <h3 class="panel-title">Upgrades <span class="aside">${count(d.candidates)} usable items listed</span></h3>
         <form class="up-weights" id="up-weights" title="Points per stat point (weapon: per DPS). Hover a stat for where its weight comes from; edits are kept in this browser.">
           <span class="up-weights-name">${esc(d.preset.name)}</span>
-          ${WEIGHT_ORDER.filter((k) => k in d.weights).map((k) => `<label title="${esc(d.model && MODEL_STATS.includes(k) ? `worked out from your sheet for ${d.model.profile.Name.toLowerCase()} content (see below)` : d.preset.sources[k] || "")}">${STAT_SHORT[k] || k}<input name="${k}" type="number" min="0" max="100" step="0.1" value="${+d.weights[k].toFixed(2)}"></label>`).join("")}
+          ${WEIGHT_ORDER.filter((k) => k in d.weights).map((k) => `<label title="${esc(fromModel(d, k) ? `worked out from your sheet for ${d.model.profile.Name.toLowerCase()} content (see below)` : d.preset.sources[k] || "")}">${STAT_SHORT[k] || k}<input name="${k}" type="number" min="0" max="100" step="0.1" value="${+d.weights[k].toFixed(2)}"></label>`).join("")}
           <button type="button" class="up-reset" title="Back to the preset's weights">reset</button>
         </form>
         ${d.model ? modelLine(d.model) : ""}

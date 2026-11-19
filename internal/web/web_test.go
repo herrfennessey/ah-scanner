@@ -20,6 +20,7 @@ import (
 	"github.com/herrfennessey/ah-scanner/internal/report"
 	"github.com/herrfennessey/ah-scanner/internal/rollup"
 	"github.com/herrfennessey/ah-scanner/internal/store"
+	"github.com/herrfennessey/ah-scanner/internal/upgrade"
 )
 
 // fixture builds a small database: Elemental Air on Horde with one partial sale.
@@ -341,5 +342,26 @@ func TestUpgradeSpecsListsPresetsWithIcons(t *testing.T) {
 	}
 	if !keys["feral"] || !keys["resto"] {
 		t.Fatalf("%+v", specs)
+	}
+}
+
+func TestSpecGroupsMergeTreesPerGroup(t *testing.T) {
+	var r specsResponse
+	// A 7/34/10-style Feral group (Heart of the Wild sits in the Restoration tree) and a Resto group.
+	if err := json.Unmarshal([]byte(`{"specialization_groups":[
+		{"is_active":true,"specializations":[
+			{"specialization":{"name":"Feral Combat"},"talents":[{"talent":{"name":"Sharpened Claws"},"talent_rank":2},{"talent":{"name":"Rend and Tear"},"talent_rank":5}]},
+			{"specialization":{"name":"Restoration"},"talents":[{"talent":{"name":"Heart of the Wild"},"talent_rank":4}]}]},
+		{"is_active":false,"specializations":[
+			{"specialization":{"name":"Restoration"},"talents":[{"talent":{"name":"Heart of the Wild"},"talent_rank":5},{"talent":{"name":"Reflection"},"talent_rank":3},{"talent":{"name":"Gift of Nature"},"talent_rank":5}]}]}]}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	g := specGroups(r)
+	feral, resto := g["Feral Combat"], g["Restoration"]
+	if !feral.Active || feral.Talents[upgrade.HotW] != 4 || feral.Talents[upgrade.RendAndTear] != 5 {
+		t.Fatalf("feral group should carry its Resto-tree points: %+v", feral)
+	}
+	if resto.Active || resto.Talents[upgrade.Reflection] != 3 || resto.Talents[upgrade.HotW] != 5 {
+		t.Fatalf("resto group: %+v", resto)
 	}
 }
