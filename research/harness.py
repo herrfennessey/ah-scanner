@@ -165,18 +165,23 @@ def run(m: Market, strategy: Callable, rules: Rules = Rules(), name: str = '') -
             if bk is None: continue
             lots = bk[(bk.item == o.item) & (bk.price <= o.max_price)]
             if r.require_next: lots = lots[lots.last_seen > t]
-            cap = min(cash, o.max_gold, r.max_item_frac * r.budget * 1e4 - spent_item.get(o.item, 0))
+            # Leave room for the listing deposit and one relist deposit (both at least 1s), so a
+            # position never spends gold it doesn't have.
+            dep_u = r.dep_rate * (m.items.sell_price.get(o.item, 0) or 0) * r.dep_mult.get(o.sell, 1.0)
+            cap = min(cash - 200, o.max_gold, r.max_item_frac * r.budget * 1e4 - spent_item.get(o.item, 0))
             units = 0; cost = 0.0; aids = []
             for price, qty, aid in zip(lots.price.values, lots.qty.values, lots.aid.values):
                 if aid in bought[o.buy]: continue
-                take = int(min(qty, o.max_units - units, (cap - cost) // price))
+                take = int(min(qty, o.max_units - units, (cap - cost - 2 * dep_u * units) // (price + 2 * dep_u)))
                 if take <= 0: break
                 units += take; cost += take * price; aids.append(aid)
             if units == 0: continue
             for aid in aids: bought[o.buy].add(aid)
             cash -= cost; spent_item[o.item] = spent_item.get(o.item, 0) + cost
             row, cf = _play(m, r, o, t, units, cost, bought, used)
-            cash -= _deposit(m, r, o.item, o.sell, units)
+            # The listing deposit now, and the relist deposit held back until the relist (or
+            # returned when it sold out first): _play's flows give it back.
+            cash -= 2 * _deposit(m, r, o.item, o.sell, units)
             row.update(t=t, item=o.item, name=m.name(o.item), buy=o.buy, sell=o.sell, tag=o.tag, strategy=name)
             rows.append(row)
             held[key] = held.get(key, 0) + 1
@@ -193,6 +198,7 @@ def _play(m, r, o, t, units, cost, bought, used):
     key = (o.sell, o.item)
     if fb is not None and key not in used: used[key] = np.zeros(len(fb[0]))
     rem = units; deps = _deposit(m, r, o.item, o.sell, units); rev = 0.0
+    reserve = _deposit(m, r, o.item, o.sell, units)   # held back for a relist (see run)
     cf = []; last = t; relists = 0
     P = o.list_price
     phases = [(t + r.post_delay_h * H, t + r.relist_h * H), (t + r.relist_h * H, t + r.window_h * H)]
@@ -202,7 +208,7 @@ def _play(m, r, o, t, units, cost, bought, used):
             fl = m.floor(o.sell, o.item, a)
             if not np.isnan(fl): P = min(P, fl - 1)
             P = max(P, cost / units * r.relist_floor_frac, 1)
-            d = _deposit(m, r, o.item, o.sell, rem); deps += d; cf.append((a, -d)); relists += 1
+            d = _deposit(m, r, o.item, o.sell, rem); deps += d; cf.append((a, reserve - d)); reserve = 0.0; relists += 1
         if fb is None: continue
         ts, pr, un, aid, cert = fb
         i0, i1 = np.searchsorted(ts, a, side='left'), np.searchsorted(ts, b, side='right')
@@ -219,7 +225,7 @@ def _play(m, r, o, t, units, cost, bought, used):
     if np.isnan(fl_end): fl_end = 0.0
     liq_unit = min(fl_end, P) * (1 - cut)
     liq = {'zero': 0.0, 'half': 0.5 * liq_unit * rem, 'floor': liq_unit * rem}
-    cf.append((end if rem > 0 else last, liq[r.liq]))
+    cf.append((end if rem > 0 else last, liq[r.liq] + reserve))
     base = rev - cost - deps
     row = dict(units=units, cost=cost, list_price=o.list_price, sold=units - rem, revenue=rev, deposits=deps,
                relists=relists, hours=(last - t) / H, pnl_zero=base, pnl_half=base + liq['half'], pnl_floor=base + liq['floor'],
@@ -273,16 +279,21 @@ def stress(m, strategy, rules=Rules(), scenarios=STRESS):
     return pd.DataFrame(out).set_index('label')
 
 
-def split_ts(m, frac=0.5):
-    """A check time splitting the usable checks into train (before) and test (after)."""
-    return int(m.start + (m.end - m.start) * frac)
+def split_ts(m, rules=Rules()):
+    """The split for a purged train/test: training positions open in [first check, split -
+    window] and resolve before it, test positions open in [split, last check]. Halfway between,
+    so both get the same span; with a few days of data, use a short window_h."""
+    first = m.start + rules.warm_h * H
+    last = m.end - rules.window_h * H
+    return int((first + rules.window_h * H + last) / 2)
 
 
 def sweep(m, make_strategy, grid: dict, rules=Rules(), split=None, metric='g_day_half'):
     """make_strategy(**params) -> strategy. Each combination is run once; the ledger is split by
-    open time so you choose on train and read the result on test. Sorted by train."""
+    open time so you choose on train and read the result on test (purged: no training position's
+    hold overlaps the test half). Sorted by train."""
     import itertools
-    split = split or split_ts(m)
+    split = split or split_ts(m, rules)
     keys = list(grid)
     out = []
     for vals in itertools.product(*grid.values()):
@@ -290,9 +301,12 @@ def sweep(m, make_strategy, grid: dict, rules=Rules(), split=None, metric='g_day
         led = run(m, make_strategy(**p), rules)
         row = dict(p)
         if len(led):
-            tr, te = led[led.t < split], led[led.t >= split]
+            # Purged split: a training position must resolve (its whole hold window) before the
+            # split, so no parameter is chosen on what the market did in the test half.
+            hold = rules.window_h * H
+            tr, te = led[led.t + hold <= split], led[led.t >= split]
             ch = led.attrs['checks']
-            dtr = max((split - ch[0]) / 86400, 1e-9); dte = max((ch[-1] - split) / 86400 + rules.every_h / 24, 1e-9)
+            dtr = max((split - hold - ch[0]) / 86400 + rules.every_h / 24, 1e-9); dte = max((ch[-1] - split) / 86400 + rules.every_h / 24, 1e-9)
             row.update(train=tr['pnl_' + metric.split('_')[-1]].sum() / 1e4 / dtr, test=te['pnl_' + metric.split('_')[-1]].sum() / 1e4 / dte,
                        n_train=len(tr), n_test=len(te), all=summary(led)[metric])
         out.append(row)

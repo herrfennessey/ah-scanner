@@ -44,6 +44,10 @@ def build_house(db, h):
     se = pd.read_sql(f"""select auction_id aid, item_id item, ts, units, unit_price price
         from sale_event where house_id={h} and kind='commodity'""", db)
     T = np.array(sorted(pd.read_sql(f"select distinct last_modified t from snapshot where house_id={h} and kind='commodity'", db).t))
+    # The collector writes last_seen only when an auction changes (or closes): one still open was
+    # seen in every scan since, up to the latest.
+    if len(T):
+        a.loc[a.closed_at.isna(), 'last_seen'] = T[-1]
     full = a[a.outcome == 'sold'][['item', 'closed_at', 'price', 'qty_last', 'aid']].rename(columns={'closed_at': 'ts', 'qty_last': 'units'})
     full['certain'] = False
     part = se[['item', 'ts', 'price', 'units', 'aid']].copy(); part['certain'] = True

@@ -18,9 +18,10 @@ report(led, m)
 # 2. adversarial scenarios
 print(stress(m, make_spread()).round(2)[['positions', 'g_day_zero', 'g_day_half', 'unit_sell', 'losing', 'stuck_g']])
 
-# 3. parameter sweep: choose on the first half (train), read the second half (test)
+# 3. parameter sweep: choose on the first half (train), read the second half (test). Purged, so
+#    with a few days of data the hold window must be short (24 h) to leave room for both halves.
 t0 = time.time()
 grid = dict(margin=[0.1, 0.15, 0.25], demand_frac=[0.1, 0.25, 0.5], min_hours=[3, 6])
-sw = sweep(m, make_spread, grid, Rules(every_h=6))
+sw = sweep(m, make_spread, grid, Rules(every_h=6, window_h=24, relist_h=12))
 print(f'\nsweep of {len(sw)} runs in {time.time() - t0:.1f}s (g/day, unsold at half the floor)')
 print(sw.round(2).to_string(index=False))

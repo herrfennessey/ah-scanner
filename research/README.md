@@ -54,8 +54,11 @@ post, double deposits, unsold = 0. A strategy worth shipping survives most of th
 
 ## Limits
 
-- ~4.8 days of data: after 24 h warm-up and a 48 h hold only ~2 days of check times remain, and
-  the train/test halves are ~1 day each. Treat differences under ~10 g/day as noise.
+- ~4.8 days of data: after 24 h warm-up and a 48 h hold only ~2 days of check times remain.
+  `sweep` purges (training positions must resolve before the test half opens), which needs a
+  short `window_h` (24 h) to leave ~1 day each side. Treat differences under ~10 g/day as noise.
+- Deposits: the listing deposit and one relist deposit are reserved from cash when buying; the
+  deposit is never refunded on a sale (conservative: the Go planner assumes it comes back).
 - Demand is inferred from listings that vanish; trades posted and bought between scans are unseen.
 - The market is deflating (Blackwater −19% in 4 days); results drift with it.
 - Your own buying doesn't move other buyers; your listings don't change what others post.
