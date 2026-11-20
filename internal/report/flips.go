@@ -827,6 +827,13 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "gap"
 		}
 		ceiling = int64(float64(allyPrice) * (1 - o.AllyEdge))
+		// And never above what buyers on Blackwater itself lately paid: its prices can slide
+		// while the Alliance's hold (Blackwater fell 19% in 4 days against 6% at home).
+		if s.Evidence {
+			if c := marketCeiling(s, o); c > 0 && c < ceiling {
+				ceiling = c
+			}
+		}
 		refFair = a.Fair
 		rate = math.Max(s.RobustPerDay, o.AllyCapture*a.RobustPerDay)
 		salesDay = a.SalesPerDay
@@ -922,9 +929,12 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		}
 	}
 	// demand is units/day bought at or above p lately (the recent floor of what our listing
-	// would have caught), or the window's sales rate when there's no evidence.
+	// would have caught), or the window's sales rate when there's no evidence. For Alliance
+	// flips too: the Alliance's demand at home only says how many might come to Blackwater; the
+	// purchases on Blackwater at our price say how many did (sizing to the assumed capture left
+	// stock unsold: in the backtest this route returned 3g on 54g bought).
 	demand := func(p int64) float64 {
-		if !s.Evidence || kind == "alliance" {
+		if !s.Evidence {
 			return rate
 		}
 		u, _ := atOrAbove(s.Sold48, p)
@@ -936,7 +946,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		return Flip{}, "slow"
 	}
 	price()
-	if units > 0 && s.Evidence && kind != "alliance" {
+	if units > 0 && s.Evidence {
 		// Size to the purchases that really happen at the resale price, not to all sales.
 		if c := int64(demand(sellAt) * window); c < clearCap {
 			clearCap = c
@@ -964,10 +974,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		}
 		return Flip{}, "budget"
 	}
-	// Proof: buyers paid at least our price lately (for Alliance flips, demand is the
-	// Alliance's at home, judged above).
+	// Proof: buyers on the house we sell on paid at least our price lately.
 	var proof int64
-	if s.Evidence && kind != "alliance" {
+	if s.Evidence {
 		_, proof = atOrAbove(s.Sold12, sellAt)
 		if proof < minProof {
 			return Flip{}, "unproven"

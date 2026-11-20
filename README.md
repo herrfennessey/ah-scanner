@@ -17,7 +17,10 @@ profit first.
 Three routes: buy underpriced listings and relist them in the same house; buy on Neutral and
 sell on Horde; or buy on Horde and sell on Neutral to Alliance players, for less than they pay
 at home (only for items the Alliance buys several times a day). On Neutral, the resale is never
-above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead.
+above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead,
+nor above what buyers on Neutral lately paid. Like the other routes it is sized to the purchases
+on Neutral at or above its price and needs 2 of them in the last 12 hours: the Alliance's demand
+at home only says how many might come.
 
 ### Styles and plays
 

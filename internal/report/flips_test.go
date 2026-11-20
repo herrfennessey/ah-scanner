@@ -118,6 +118,37 @@ func TestAllianceRouteNeedsFastAllianceSales(t *testing.T) {
 	}
 }
 
+func TestAllianceRouteSizedByBlackwaterPurchases(t *testing.T) {
+	// Alliance pays 31s and buys 20 times a day, so the Alliance capture alone would allow 8
+	// units. But buyers on Blackwater took only 6 units at 29s+ in two days: size to 3 a day.
+	mk := func(sold12, sold48 []SaleLevel, clearing int64) FlipItem {
+		return FlipItem{Item: 3, Name: "Elemental Air", Houses: map[string]*FlipStat{
+			"horde": {Fair: 2200, Min: 1500, Book: []FlipLevel{{1500, 20}}},
+			"blackwater": {Fair: 3000, Min: 0, Sales: 6, SalesPerDay: 3, RobustPerDay: 2,
+				Evidence: true, Sold12: sold12, Sold48: sold48, Clearing: clearing},
+			"alliance": {Fair: 3100, Min: 3100, Sales: 60, SalesPerDay: 20, RobustPerDay: 80},
+		}}
+	}
+	at := []SaleLevel{{P: priceStep(2945), Q: 3, N: 3}}
+	f := planRisk([]FlipItem{mk(at, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)}, 40, StyleCasual)
+	if len(f) != 1 || f[0].Kind != "alliance" || f[0].BuyUnits != 3 {
+		t.Fatalf("want 3 units sized to Blackwater's purchases: %+v", f)
+	}
+	// Nobody on Blackwater paid that much in the last 12 hours: unproven, whatever the Alliance does.
+	if f := planRisk([]FlipItem{mk(nil, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)}, 40, StyleCasual); len(f) != 0 {
+		t.Fatalf("no recent Blackwater buyers at the price should block: %+v", f)
+	}
+	// Blackwater buyers lately paid 25s: the resale is capped there, not at the Alliance's 26.6s
+	// (95% of its 28s market value). Far under that market value it would count as a slide.
+	low := []SaleLevel{{P: priceStep(2500), Q: 6, N: 6}}
+	it := mk(low, low, 2500)
+	it.Houses["alliance"].Fair = 2800
+	f = planRisk([]FlipItem{it}, 40, StyleCasual)
+	if len(f) != 1 || f[0].SellAt > 2500 {
+		t.Fatalf("want the resale capped at Blackwater's 25s: %+v", f)
+	}
+}
+
 func TestOneSaleIsNotEvidence(t *testing.T) {
 	// The Jagged Arrow case: one 6,600-arrow sale on Blackwater.
 	it := FlipItem{Item: 4, Name: "Jagged Arrow", Houses: map[string]*FlipStat{
