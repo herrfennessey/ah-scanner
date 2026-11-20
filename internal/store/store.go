@@ -686,13 +686,11 @@ func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, er
 						break
 					}
 				}
-				for _, b := range g {
-					if cancelled || b.price > a.price {
-						break
-					}
-					if b.id != a.id && b.price == a.price && b.qty == a.qty && b.first == a.closed {
-						cancelled = true // 4d: reposted at the same price in the scan it vanished
-					}
+				// 4d: reposted at the same price in the scan it vanished. g is sorted by price, so
+				// start at the first copy at a's price.
+				for j := sort.Search(len(g), func(j int) bool { return g[j].price >= a.price }); !cancelled && j < len(g) && g[j].price == a.price; j++ {
+					b := g[j]
+					cancelled = b.id != a.id && b.qty == a.qty && b.first == a.closed
 				}
 				if cancelled {
 					change = append(change, a.id)
