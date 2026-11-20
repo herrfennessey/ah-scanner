@@ -127,9 +127,9 @@ func (c *Collector) Setup(ctx context.Context) error {
 			return err
 		}
 	}
-	// Gear recorded as sold before tracker rule 4c: reclassify the last days and roll them up
-	// again, so sales counts and the flip planner agree with the rule. Once.
-	const gearKey = "backfill.gear.rule4c"
+	// Gear recorded as sold before tracker rules 4c and 4d: reclassify the last days and roll
+	// them up again, so sales counts and the flip planner agree with the rules. Once per rule.
+	const gearKey = "backfill.gear.rule4d"
 	if done, err := c.Store.Meta(ctx, gearKey); err != nil {
 		return err
 	} else if done == "" {

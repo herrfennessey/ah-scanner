@@ -8,7 +8,7 @@ import "github.com/herrfennessey/ah-scanner/internal/listing"
 const (
 	Sold          = "sold"            // rule 5: vanished with time to spare and no cancel signal
 	Partial       = "partial"         // rule 1: commodity quantity dropped on the same auction
-	Cancelled     = "cancelled"       // rule 4a: vanished with time to spare, reposted cheaper (probably not sold); rule 4c for gear
+	Cancelled     = "cancelled"       // rule 4a: vanished with time to spare, reposted cheaper (probably not sold); rules 4c, 4d for gear
 	ExpiredOrSold = "expired_or_sold" // rule 3: vanished when it could have expired
 	// Unsold: a commodity that vanished while cheaper units of the same item, listed before it,
 	// stayed untouched. The commodity AH fills buys cheapest-first, so nobody bought it: it was
@@ -127,7 +127,11 @@ func classifyVanished(kind listing.Kind, o Open, now int64, newMin map[repostKey
 		return ExpiredOrSold
 	}
 	// Rule 4a: reposted cheaper — a new auction of the same item and quantity at a lower price.
-	if p, ok := newMin[repostKey{o.ItemID, o.Variant, o.Qty}]; ok && o.UnitPrice > 0 && p < o.UnitPrice {
+	// Rule 4d: gear reposted at the same price too. A copy that vanishes as an identical one
+	// appears is a cancel and repost as often as a restock after a sale (a fifth of gear
+	// "sales" on Horde, 2026-11-14 to 19), so it's ambiguous, not a certain sale.
+	if p, ok := newMin[repostKey{o.ItemID, o.Variant, o.Qty}]; ok && o.UnitPrice > 0 &&
+		(p < o.UnitPrice || (kind == listing.Gear && p == o.UnitPrice)) {
 		return Cancelled
 	}
 	// Rule 4c: gear that vanished while a cheaper copy, listed before, is still there. Buyers

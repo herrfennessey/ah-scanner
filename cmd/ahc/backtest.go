@@ -24,8 +24,9 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 	} else if n > 0 {
 		fmt.Fprintf(os.Stderr, "ahc: marked %d older auctions as cheapest-when-posted or not\n", n)
 	}
-	// And gear "sales" from before tracker rule 4c (a cheaper copy outlasted it): reclassify the
-	// window and roll its days up again, as the collector does once at startup.
+	// And gear "sales" from before tracker rules 4c and 4d (a cheaper copy outlasted it, or an
+	// identical one replaced it): reclassify the window and roll its days up again, as the
+	// collector does once at startup.
 	// Never further back than the detail retention, or good daily rows would be overwritten.
 	days := cfg.RollupDays(f.days + 2)
 	from := now.AddDate(0, 0, -(days - 1))
@@ -33,7 +34,7 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 	if n, err := st.ReclassifyGearSales(ctx, fromDay); err != nil {
 		return err
 	} else if n > 0 {
-		fmt.Fprintf(os.Stderr, "ahc: %d gear sales were cancels by rule 4c; rolling up again\n", n)
+		fmt.Fprintf(os.Stderr, "ahc: %d gear sales were cancels by rules 4c/4d; rolling up again\n", n)
 		if _, err := rollup.Range(ctx, st.DB, from, now, rollup.Options{AmbiguousWeight: cfg.AmbiguousWeight}); err != nil {
 			return err
 		}

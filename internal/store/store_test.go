@@ -292,11 +292,18 @@ func TestReclassifyGearSales(t *testing.T) {
 		(1,'gear',1,9,'',300,?,?,?, 'sold'), (1,'gear',2,9,'',250,?,?,NULL,NULL), (1,'gear',3,9,'',200,?,?,?,'sold'),
 		(1,'gear',4,9,'',400,?,?,?,'sold')`,
 		now-7200, now-3600, now, now-7200, now, now-7200, now-3600, now-1800, now-30*86400, now-30*86400, now-29*86400)
+	// 5: sold as an identical copy (6) appeared in the same scan: a repost (rule 4d). 7: the copy
+	// at its price (8) came a scan later: still sold.
+	st.DB.Exec(`INSERT INTO auction (house_id, kind, auction_id, item_id, variant, unit_price, first_seen, last_seen, closed_at, outcome) VALUES
+		(1,'gear',5,10,'',500,?,?,?,'sold'), (1,'gear',6,10,'',500,?,?,NULL,NULL),
+		(1,'gear',7,11,'',500,?,?,?,'sold'), (1,'gear',8,11,'',500,?,?,NULL,NULL)`,
+		now-7200, now-3600, now-1800, now-1800, now,
+		now-7200, now-3600, now-1800, now-900, now)
 	n, err := st.ReclassifyGearSales(ctx, now-86400)
-	if err != nil || n != 1 {
+	if err != nil || n != 2 {
 		t.Fatalf("changed %d (%v)", n, err)
 	}
-	for id, want := range map[int64]string{1: "cancelled", 3: "sold", 4: "sold"} {
+	for id, want := range map[int64]string{1: "cancelled", 3: "sold", 4: "sold", 5: "cancelled", 7: "sold"} {
 		var got string
 		st.DB.QueryRow(`SELECT outcome FROM auction WHERE auction_id=?`, id).Scan(&got)
 		if got != want {

@@ -17,7 +17,11 @@ profit first.
 Three routes: buy underpriced listings and relist them in the same house; buy on Neutral and
 sell on Horde; or buy on Horde and sell on Neutral to Alliance players, for less than they pay
 at home (only for items the Alliance buys several times a day). On Neutral, the resale is never
-above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead.
+above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead,
+nor above what buyers on Neutral lately paid. Like the other routes it is sized to the purchases
+on Neutral at or above its price and needs 2 of them in the last 12 hours: the Alliance's demand
+at home only says how many might come. It's left alone when either market is sliding (the
+Alliance's price at home or Neutral's own), judged against the lower of the two market values.
 
 ### Styles and plays
 
@@ -74,8 +78,9 @@ scan: new flips get a badge, a toast appears and the tab title shows the count.
 
 What a scan can see: a commodity listing that loses units, or vanishes with nothing cheaper
 left, was bought (commodities fill cheapest first). Vanished gear may have been cancelled, so it
-counts only if no cheaper copy outlasted it. Anything listed and bought within one scan
-interval is never seen, so demand is, if anything, undercounted.
+counts only if no cheaper copy outlasted it and no identical copy at the same price appeared in
+its place. Anything listed and bought within one scan interval is never seen, so demand is, if
+anything, undercounted.
 
 ### Backtest and local preview
 
@@ -185,7 +190,7 @@ before it:
 | commodity quantity dropped | sold (certain) | `sold_lo` |
 | vanished with ≥ 2 h left, no repost signal | sold | `sold_lo` |
 | commodity vanished while cheaper units sat untouched (buys fill cheapest-first) | unsold | neither |
-| vanished with time left, but reposted cheaper | cancelled | `sold_hi` only |
+| vanished with time left, but reposted cheaper (gear: or at the same price) | cancelled | `sold_hi` only |
 | vanished when it could have expired | expired-or-sold | `sold_hi` only |
 
 The API shows listings, not sales, so sold figures are always a range (`est (lo–hi)`), with
