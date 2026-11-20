@@ -616,10 +616,10 @@ func (s *Store) BackfillFront(ctx context.Context, since int64) (int64, error) {
 	return n, nil
 }
 
-// ReclassifyGearSales applies the tracker's rule 4c to gear recorded as sold since the given
-// time, before the rule existed: a copy that vanished while a cheaper one, listed before it, was
-// still there afterwards becomes cancelled. Returns how many changed; the daily rows of those
-// days need rolling up again.
+// ReclassifyGearSales applies the tracker's rules 4c and 4d to gear recorded as sold since the
+// given time, before the rules existed: a copy that vanished while a cheaper one, listed before
+// it, was still there afterwards (4c), or as an identical copy at the same price appeared (4d),
+// becomes cancelled. Returns how many changed; the daily rows of those days need rolling up again.
 func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, error) {
 	houses, err := s.DB.QueryContext(ctx, `SELECT DISTINCT house_id FROM auction WHERE kind='gear'`)
 	if err != nil {
@@ -639,14 +639,14 @@ func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, er
 		return 0, err
 	}
 	type auc struct {
-		id, price, first, last, closed int64 // closed 0: still open
-		sold                           bool
+		id, price, qty, first, last, closed int64 // closed 0: still open
+		sold                                bool
 	}
 	var n int64
 	for _, h := range hs {
 		// Everything that could have been up next to a sale since then: listings last longer
 		// than 2 days in no game version.
-		rows, err := s.DB.QueryContext(ctx, `SELECT auction_id, item_id, variant, unit_price, first_seen, last_seen, COALESCE(closed_at, 0), outcome='sold'
+		rows, err := s.DB.QueryContext(ctx, `SELECT auction_id, item_id, variant, unit_price, COALESCE(qty_first, 1), first_seen, last_seen, COALESCE(closed_at, 0), outcome='sold'
 			FROM auction WHERE house_id=? AND kind='gear' AND unit_price>0 AND (closed_at IS NULL OR closed_at>=?)`, h, since-2*86400)
 		if err != nil {
 			return n, err
@@ -657,7 +657,7 @@ func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, er
 			var item int64
 			var variant string
 			var sold sql.NullBool
-			if err := rows.Scan(&a.id, &item, &variant, &a.price, &a.first, &a.last, &a.closed, &sold); err != nil {
+			if err := rows.Scan(&a.id, &item, &variant, &a.price, &a.qty, &a.first, &a.last, &a.closed, &sold); err != nil {
 				rows.Close()
 				return n, err
 			}
@@ -676,14 +676,26 @@ func (s *Store) ReclassifyGearSales(ctx context.Context, since int64) (int64, er
 				if !a.sold || a.closed < since {
 					continue
 				}
+				cancelled := false
 				for _, b := range g[:i] {
 					if b.price >= a.price {
 						break
 					}
 					if b.first <= a.last && (b.closed == 0 || b.closed > a.closed) {
-						change = append(change, a.id)
+						cancelled = true // 4c
 						break
 					}
+				}
+				for _, b := range g {
+					if cancelled || b.price > a.price {
+						break
+					}
+					if b.id != a.id && b.price == a.price && b.qty == a.qty && b.first == a.closed {
+						cancelled = true // 4d: reposted at the same price in the scan it vanished
+					}
+				}
+				if cancelled {
+					change = append(change, a.id)
 				}
 			}
 		}

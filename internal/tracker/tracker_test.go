@@ -95,6 +95,20 @@ func TestDiffRules(t *testing.T) {
 			now:  t30, wantID: 1, wantOutcome: Cancelled, wantUnits: 20,
 		},
 		{
+			name: "rule4d gear reposted at the same price is cancelled",
+			kind: listing.Gear,
+			open: []Open{open(1, 4304, 100, 1, listing.VeryLong)},
+			cur:  []listing.Listing{cur(2, 4304, 100, 1, listing.VeryLong)},
+			now:  t30, wantID: 1, wantOutcome: Cancelled, wantUnits: 1,
+		},
+		{
+			name: "commodity reposted at the same price is still sold",
+			kind: listing.Commodity,
+			open: []Open{open(1, 7069, 100, 5, listing.Long)},
+			cur:  []listing.Listing{cur(2, 7069, 100, 5, listing.Long)},
+			now:  t30, wantID: 1, wantOutcome: Sold, wantUnits: 5,
+		},
+		{
 			name: "repost with different quantity is not a cancel signal",
 			kind: listing.Gear,
 			open: []Open{open(1, 4304, 100, 20, listing.VeryLong)},

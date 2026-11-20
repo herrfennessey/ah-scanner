@@ -77,8 +77,9 @@ scan: new flips get a badge, a toast appears and the tab title shows the count.
 
 What a scan can see: a commodity listing that loses units, or vanishes with nothing cheaper
 left, was bought (commodities fill cheapest first). Vanished gear may have been cancelled, so it
-counts only if no cheaper copy outlasted it. Anything listed and bought within one scan
-interval is never seen, so demand is, if anything, undercounted.
+counts only if no cheaper copy outlasted it and no identical copy at the same price appeared in
+its place. Anything listed and bought within one scan interval is never seen, so demand is, if
+anything, undercounted.
 
 ### Backtest and local preview
 
@@ -188,7 +189,7 @@ before it:
 | commodity quantity dropped | sold (certain) | `sold_lo` |
 | vanished with ≥ 2 h left, no repost signal | sold | `sold_lo` |
 | commodity vanished while cheaper units sat untouched (buys fill cheapest-first) | unsold | neither |
-| vanished with time left, but reposted cheaper | cancelled | `sold_hi` only |
+| vanished with time left, but reposted cheaper (gear: or at the same price) | cancelled | `sold_hi` only |
 | vanished when it could have expired | expired-or-sold | `sold_hi` only |
 
 The API shows listings, not sales, so sold figures are always a range (`est (lo–hi)`), with
