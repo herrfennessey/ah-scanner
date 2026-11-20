@@ -816,7 +816,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		if a == nil || a.Sales < 5 || a.SalesPerDay < max(3, o.minSales) || (s.Volatile && !o.volatile) {
 			return Flip{}, "slow"
 		}
-		if !o.volatile && a.Trend < fallingTrend {
+		// Either market sliding: the Alliance's price at home, or Blackwater's own (it can fall
+		// while the Alliance's holds, and that's where the stock is sold).
+		if !o.volatile && (a.Trend < fallingTrend || (s.Evidence && s.Trend < fallingTrend)) {
 			return Flip{}, "falling"
 		}
 		allyPrice = a.Min
@@ -834,7 +836,12 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 				ceiling = c
 			}
 		}
+		// A resale far under market value means a slide: judged against the lower of the two
+		// markets, since a Blackwater price steadily under the Alliance's isn't one.
 		refFair = a.Fair
+		if s.Fair > 0 && s.Fair < refFair {
+			refFair = s.Fair
+		}
 		rate = math.Max(s.RobustPerDay, o.AllyCapture*a.RobustPerDay)
 		salesDay = a.SalesPerDay
 		why = fmt.Sprintf("Alliance pays %s at home and buys %.0f times a day; yours on Blackwater is cheaper", Gold(allyPrice), a.SalesPerDay)
@@ -1048,6 +1055,11 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	if !o.p.Relists {
 		listed := o.p.ListHours / 24
 		hold = soldOut*math.Min(listed, math.Max(days, 1.0/24)) + (1-soldOut)*listed
+	}
+	if kind == "alliance" && s.Evidence {
+		// What the page shows and the check-in rule uses: the Blackwater buyers it was sized to,
+		// not the Alliance capture that only bounds them.
+		rate = demand(sellAt)
 	}
 	f := Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Icon: it.Icon, Quality: it.Quality, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
 		BuyUnits: units, BuyUpTo: upTo, BuyCost: cost, SellAt: sellAt, Play: o.play, ListHours: int(o.p.ListHours), Profit: profit, ROI: roi,

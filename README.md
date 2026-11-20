@@ -20,7 +20,8 @@ at home (only for items the Alliance buys several times a day). On Neutral, the 
 above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead,
 nor above what buyers on Neutral lately paid. Like the other routes it is sized to the purchases
 on Neutral at or above its price and needs 2 of them in the last 12 hours: the Alliance's demand
-at home only says how many might come.
+at home only says how many might come. It's left alone when either market is sliding (the
+Alliance's price at home or Neutral's own), judged against the lower of the two market values.
 
 ### Styles and plays
 

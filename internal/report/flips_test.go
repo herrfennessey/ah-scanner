@@ -131,18 +131,25 @@ func TestAllianceRouteSizedByBlackwaterPurchases(t *testing.T) {
 	}
 	at := []SaleLevel{{P: priceStep(2945), Q: 3, N: 3}}
 	f := planRisk([]FlipItem{mk(at, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)}, 40, StyleCasual)
-	if len(f) != 1 || f[0].Kind != "alliance" || f[0].BuyUnits != 3 {
-		t.Fatalf("want 3 units sized to Blackwater's purchases: %+v", f)
+	if len(f) != 1 || f[0].Kind != "alliance" || f[0].BuyUnits != 3 || f[0].Demand != 3 {
+		t.Fatalf("want 3 units sized to (and shown as) Blackwater's purchases: %+v", f)
+	}
+	// Blackwater's own price sliding 15% a day: falling, even though the Alliance's holds.
+	sliding := mk(at, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)
+	sliding.Houses["blackwater"].Trend = -0.15
+	if f := planRisk([]FlipItem{sliding}, 40, StyleCasual); len(f) != 0 {
+		t.Fatalf("a sliding Blackwater price should block: %+v", f)
 	}
 	// Nobody on Blackwater paid that much in the last 12 hours: unproven, whatever the Alliance does.
 	if f := planRisk([]FlipItem{mk(nil, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)}, 40, StyleCasual); len(f) != 0 {
 		t.Fatalf("no recent Blackwater buyers at the price should block: %+v", f)
 	}
-	// Blackwater buyers lately paid 25s: the resale is capped there, not at the Alliance's 26.6s
-	// (95% of its 28s market value). Far under that market value it would count as a slide.
+	// Blackwater steady at about 26s while the Alliance pays 31s: the resale is capped at what
+	// Blackwater buyers paid (25s), and isn't a slide, since it's judged against the lower
+	// market's value (not the Alliance's, which 25s is far under).
 	low := []SaleLevel{{P: priceStep(2500), Q: 6, N: 6}}
 	it := mk(low, low, 2500)
-	it.Houses["alliance"].Fair = 2800
+	it.Houses["blackwater"].Fair = 2600
 	f = planRisk([]FlipItem{it}, 40, StyleCasual)
 	if len(f) != 1 || f[0].SellAt > 2500 {
 		t.Fatalf("want the resale capped at Blackwater's 25s: %+v", f)
