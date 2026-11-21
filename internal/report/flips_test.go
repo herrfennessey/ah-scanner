@@ -156,6 +156,35 @@ func TestAllianceRouteSizedByBlackwaterPurchases(t *testing.T) {
 	}
 }
 
+func TestCrossIntoRisingMarketAsksWhatBuyersPay(t *testing.T) {
+	// The Savory Whimsyfin Delight case: Horde's 7-day value (8.3s) lags a market that moved
+	// up; Horde buyers paid 14.9s over the last day and 2+ in the last 12 hours. Blackwater sells
+	// it at 9.96s. Capped at the stale value there's no gap; at what buyers pay there is.
+	mk := func(trend float64) FlipItem {
+		paid := []SaleLevel{{P: priceStep(1490), Q: 2000, N: 30}}
+		return FlipItem{Item: 7, Name: "Savory Whimsyfin Delight", Houses: map[string]*FlipStat{
+			"blackwater": {Fair: 790, Min: 996, Book: []FlipLevel{{996, 300}}},
+			"horde": {Fair: 830, Min: 1491, Clearing: 1493, Trend: trend, Sales: 220, SalesPerDay: 38, RobustPerDay: 2300,
+				Evidence: true, Sold12: paid, Sold48: paid, Book: []FlipLevel{{1491, 360}}},
+		}}
+	}
+	cross := func(f []Flip) *Flip {
+		for i := range f {
+			if f[i].Kind == "cross" {
+				return &f[i]
+			}
+		}
+		return nil
+	}
+	if x := cross(plan([]FlipItem{mk(0.5)}, 40)); x == nil || x.SellAt != 1490 {
+		t.Fatalf("rising: want a cross flip listed at 14.90s, got %+v", x)
+	}
+	// The same market turning down: the stale value caps it again, so no gap.
+	if x := cross(plan([]FlipItem{mk(-0.05)}, 40)); x != nil {
+		t.Fatalf("falling: want no cross flip, got %+v", x)
+	}
+}
+
 func TestOneSaleIsNotEvidence(t *testing.T) {
 	// The Jagged Arrow case: one 6,600-arrow sale on Blackwater.
 	it := FlipItem{Item: 4, Name: "Jagged Arrow", Houses: map[string]*FlipStat{
