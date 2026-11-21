@@ -101,8 +101,9 @@ locally), `config` (yaml + env secrets).
   `store.ReclassifyGearSales` (or add a sibling) and bump its `backfill.*` meta key in
   `collector.go`, so the collector reclassifies and rolls up once at its next start.
 - Every flip route sizes to the purchases on the house it sells on at or above its price, and
-  needs recent ones as proof. The Alliance's sales at home only gate the Horde → Blackwater route;
-  sizing it on them left stock unsold.
+  needs recent ones as proof. Horde → Blackwater is judged on Blackwater's buyers alone when they're
+  on record (they pay well over home prices for cheap goods, so no home-price cap), with a higher
+  return floor (`premiumMinROI`); the Alliance-at-home logic is only the fallback without evidence.
 
 ## Commit messages: Conventional Commits
 
