@@ -118,41 +118,45 @@ func TestAllianceRouteNeedsFastAllianceSales(t *testing.T) {
 	}
 }
 
-func TestAllianceRouteSizedByBlackwaterPurchases(t *testing.T) {
-	// Alliance pays 31s and buys 20 times a day, so the Alliance capture alone would allow 8
-	// units. But buyers on Blackwater took only 6 units at 29s+ in two days: size to 3 a day.
-	mk := func(sold12, sold48 []SaleLevel, clearing int64) FlipItem {
-		return FlipItem{Item: 3, Name: "Elemental Air", Houses: map[string]*FlipStat{
-			"horde": {Fair: 2200, Min: 1500, Book: []FlipLevel{{1500, 20}}},
-			"blackwater": {Fair: 3000, Min: 0, Sales: 6, SalesPerDay: 3, RobustPerDay: 2,
-				Evidence: true, Sold12: sold12, Sold48: sold48, Clearing: clearing},
-			"alliance": {Fair: 3100, Min: 3100, Sales: 60, SalesPerDay: 20, RobustPerDay: 80},
+func TestBlackwaterPremiumJudgedOnBlackwater(t *testing.T) {
+	// The Coarse Thread case: 12c at both homes, but Blackwater buyers pay 89c, 20 times a day.
+	// With Blackwater's own purchases on record, neither home price caps the resale.
+	mk := func(horde int64, sold12 []SaleLevel, trend float64) FlipItem {
+		at := []SaleLevel{{P: priceStep(89), Q: 600, N: 40}}
+		return FlipItem{Item: 8, Name: "Coarse Thread", Houses: map[string]*FlipStat{
+			"horde": {Fair: horde, Min: horde, Book: []FlipLevel{{horde, 2000}}},
+			"blackwater": {Fair: 85, Min: 90, Clearing: 89, Trend: trend, Sales: 140, SalesPerDay: 20, RobustPerDay: 300,
+				Evidence: true, Sold12: sold12, Sold48: at},
+			"alliance": {Fair: 12, Min: 12, Sales: 60, SalesPerDay: 20, RobustPerDay: 800},
 		}}
 	}
-	at := []SaleLevel{{P: priceStep(2945), Q: 3, N: 3}}
-	f := planRisk([]FlipItem{mk(at, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)}, 40, StyleCasual)
-	if len(f) != 1 || f[0].Kind != "alliance" || f[0].BuyUnits != 3 || f[0].Demand != 3 {
-		t.Fatalf("want 3 units sized to (and shown as) Blackwater's purchases: %+v", f)
+	recent := []SaleLevel{{P: priceStep(89), Q: 100, N: 10}}
+	premium := func(f []Flip) *Flip {
+		for i := range f {
+			if f[i].Kind == "alliance" {
+				return &f[i]
+			}
+		}
+		return nil
 	}
-	// Blackwater's own price sliding 15% a day: falling, even though the Alliance's holds.
-	sliding := mk(at, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)
-	sliding.Houses["blackwater"].Trend = -0.15
-	if f := planRisk([]FlipItem{sliding}, 40, StyleCasual); len(f) != 0 {
-		t.Fatalf("a sliding Blackwater price should block: %+v", f)
+	x := premium(plan([]FlipItem{mk(12, recent, 0)}, 40))
+	if x == nil || x.SellAt != 85 || x.BuyUnits == 0 || x.BuyUnits > 300 {
+		t.Fatalf("want the Blackwater premium flip at its market value (85c), sized to its buyers: %+v", x)
 	}
-	// Nobody on Blackwater paid that much in the last 12 hours: unproven, whatever the Alliance does.
-	if f := planRisk([]FlipItem{mk(nil, []SaleLevel{{P: priceStep(2945), Q: 6, N: 6}}, 0)}, 40, StyleCasual); len(f) != 0 {
-		t.Fatalf("no recent Blackwater buyers at the price should block: %+v", f)
+	if x.Demand != 300 {
+		t.Fatalf("demand should be Blackwater's own: %+v", x)
 	}
-	// Blackwater steady at about 26s while the Alliance pays 31s: the resale is capped at what
-	// Blackwater buyers paid (25s), and isn't a slide, since it's judged against the lower
-	// market's value (not the Alliance's, which 25s is far under).
-	low := []SaleLevel{{P: priceStep(2500), Q: 6, N: 6}}
-	it := mk(low, low, 2500)
-	it.Houses["blackwater"].Fair = 2600
-	f = planRisk([]FlipItem{it}, 40, StyleCasual)
-	if len(f) != 1 || f[0].SellAt > 2500 {
-		t.Fatalf("want the resale capped at Blackwater's 25s: %+v", f)
+	// A thin premium (bought at 50c to sell at 85c, 1.7x) doesn't clear doubling the money.
+	if x := premium(plan([]FlipItem{mk(50, recent, 0)}, 40)); x != nil {
+		t.Fatalf("a thin premium should be left alone: %+v", x)
+	}
+	// Nobody on Blackwater paid that much in the last 12 hours: unproven.
+	if x := premium(plan([]FlipItem{mk(12, nil, 0)}, 40)); x != nil {
+		t.Fatalf("no recent Blackwater buyers at the price should block: %+v", x)
+	}
+	// Blackwater's price sliding 15% a day: falling.
+	if x := premium(plan([]FlipItem{mk(12, recent, -0.15)}, 40)); x != nil {
+		t.Fatalf("a sliding Blackwater price should block: %+v", x)
 	}
 }
 

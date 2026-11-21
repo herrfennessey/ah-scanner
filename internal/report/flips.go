@@ -748,6 +748,8 @@ const (
 	// fallbackUndercut: chance a fresh cheapest listing is undercut within a round, when a
 	// house has no measurements at all (a busy AH undercuts most listings within hours).
 	fallbackUndercut = 0.5
+	// premiumMinROI: the least a Blackwater premium flip must return if all sells (see planOne).
+	premiumMinROI = 1.0
 	// campDelivered: share of its expected profit a camp delivered in the backtest (79%, over
 	// 516 trades, 2026-11-14 to 17).
 	campDelivered = 0.8
@@ -806,8 +808,32 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	var refFair int64 // market value the resale is judged against for a slide
 	var why string
 	window := o.p.WindowHours / 24
-	switch kind {
-	case "alliance":
+	// Horde → Blackwater with Blackwater's own purchases on record: judged on Blackwater alone.
+	// Its buyers often pay well over either home price for cheap goods (convenience: Coarse
+	// Thread ~89c on Blackwater against 12c at both homes, the purchases not reposts), so the
+	// Alliance and home-price caps would forbid trades its buyers make every day.
+	premium := kind == "alliance" && s.Evidence
+	// The premium is real for cheap goods at big markups and not for thin ones: in the backtest
+	// (Nov 17-20) these flips at under 1.6x lost 9%, at 3x+ returned 93% or more. So they must
+	// clear doubling the money if all sells (about 2.35x after the 15% cut), not the usual 20%.
+	minROI := o.MinROI
+	if premium {
+		minROI = max(minROI, premiumMinROI)
+	}
+	switch {
+	case premium:
+		if s.Sales < 5 || s.SalesPerDay < o.minSales || (s.Volatile && !o.volatile) || s.Fair == 0 {
+			return Flip{}, "slow"
+		}
+		if !o.volatile && s.Trend < fallingTrend {
+			return Flip{}, "falling"
+		}
+		ceiling = marketCeiling(s, o)
+		refFair = s.Fair
+		rate = s.RobustPerDay
+		salesDay = s.SalesPerDay
+		why = fmt.Sprintf("Blackwater buyers paid %s lately, %.0f times a day", Gold(ceiling), salesDay)
+	case kind == "alliance":
 		// Rule: the Alliance must buy it fast, and pay more at home than our Blackwater price.
 		if ally == nil || !ally.Tracked {
 			return Flip{}, "slow"
@@ -845,7 +871,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		rate = math.Max(s.RobustPerDay, o.AllyCapture*a.RobustPerDay)
 		salesDay = a.SalesPerDay
 		why = fmt.Sprintf("Alliance pays %s at home and buys %.0f times a day; yours on Blackwater is cheaper", Gold(allyPrice), a.SalesPerDay)
-	default:
+	default: // relist and cross
 		if s.Sales < 5 || s.SalesPerDay < o.minSales || (s.Volatile && !o.volatile) || s.Fair == 0 {
 			return Flip{}, "slow"
 		}
@@ -857,9 +883,10 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
 	}
-	if sell.Faction == "blackwater" {
+	if sell.Faction == "blackwater" && !premium {
 		// Every Blackwater buyer has a faction house at home: nobody pays more on Blackwater
 		// than the dearer of the two home prices (a stale market value can say otherwise).
+		// Not for a premium flip: its price is what Blackwater buyers themselves paid.
 		if home := blackwaterHomeCap(it, ally != nil); home > 0 && home-1 < ceiling {
 			ceiling = home - 1
 		}
@@ -877,7 +904,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		net := float64(sellAt)*(1-sell.Cut) - dep
 		// A unit is worth buying only if it keeps the minimum return and its margin also covers
 		// one relist deposit, so a few dear units can't sink the whole flip.
-		maxBuy := int64(min(net/(1+o.MinROI), net-dep))
+		maxBuy := int64(min(net/(1+minROI), net-dep))
 		units, cost, upTo, left = 0, 0, 0, 0
 		if relist {
 			// What we buy here leaves the band and comes back into it at our price, so the
@@ -974,7 +1001,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		net := float64(sellAt)*(1-sell.Cut) - dep
 		p := float64(b.Book[0].P)
 		switch {
-		case p > net/(1+o.MinROI):
+		case p > net/(1+minROI):
 			return Flip{}, "gap"
 		case p > net-dep:
 			return Flip{}, "deposit" // a margin, but not one that survives being undercut
@@ -994,7 +1021,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	gross := int64(math.Round(float64(sellAt) * (1 - sell.Cut) * float64(units)))
 	profit := gross - cost - depositAtRisk
 	roi := float64(profit) / float64(cost)
-	if roi < o.MinROI {
+	if roi < minROI {
 		return Flip{}, "gap"
 	}
 	if profit < o.MinProfit {

@@ -15,13 +15,16 @@ profit first.
 | Cancel if position > | check in: relist under the cheapest when more units than this are listed cheaper than yours; camp: when undercut; hold: never |
 
 Three routes: buy underpriced listings and relist them in the same house; buy on Neutral and
-sell on Horde; or buy on Horde and sell on Neutral to Alliance players, for less than they pay
-at home (only for items the Alliance buys several times a day). On Neutral, the resale is never
-above the dearer of the Horde and Alliance prices: every buyer there can buy at home instead,
-nor above what buyers on Neutral lately paid. Like the other routes it is sized to the purchases
-on Neutral at or above its price and needs 2 of them in the last 12 hours: the Alliance's demand
-at home only says how many might come. It's left alone when either market is sliding (the
-Alliance's price at home or Neutral's own), judged against the lower of the two market values.
+sell on Horde; or buy on Horde and sell on Neutral.
+
+Horde → Neutral is judged on Neutral's own buyers when their purchases are on record: its sales
+speed and trend, what they lately paid, and the purchases at or above the price (2 in the last
+12 hours, sized to them). Neutral shoppers often pay well over either home price for cheap goods
+(Coarse Thread ~89c there against 12c at both homes), so neither home price caps it, but it must
+double the money if all sells (about 2.35x after the 15% cut): in the backtest these flips lost
+at under 1.6x and returned 93%+ at 3x and more. Without that evidence it falls back to selling to
+Alliance players for less than they pay at home (only for items the Alliance buys several times
+a day), never above the dearer of the Horde and Alliance prices.
 
 ### Styles and plays
 
