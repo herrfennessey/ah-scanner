@@ -853,6 +853,13 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "falling"
 		}
 		ceiling = marketCeiling(s, o) // never bet on the price going above what buyers pay
+		// Blackwater → Horde into a market that moved up: the 7-day value lags what Horde buyers
+		// pay now. While it isn't falling, the resale may ask the median paid over 24 hours
+		// (proof and sizing at that price are still checked below). Backtest Nov 17-20: +116g
+		// realized on this route; the same for relists into the spike lost money, so not those.
+		if kind == "cross" && s.Evidence && s.Trend >= 0 && s.Clearing > ceiling {
+			ceiling = s.Clearing
+		}
 		refFair = s.Fair
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
