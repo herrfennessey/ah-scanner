@@ -58,7 +58,9 @@ def make_ev(mdl, share=0.5, min_ev_g=0.2, min_roi=0.1, routes=ROUTES, liq_frac=0
             sf = ctx.feat(sell); bbk = ctx.book(buy); sbk = ctx.book(sell)
             if sf is None or bbk is None: continue
             sf = sf[sf.med24.notna() & (sf.paid24_n >= 3)]
-            bby = {i: g for i, g in bbk[bbk.last_seen > t].groupby('item')}
+            # the book as it is now: whether a listing is still up at the next scan is the
+            # future, which the executor checks when it buys (harness.run), not the strategy
+            bby = {i: g for i, g in bbk.groupby('item')}
             sby = {i: g for i, g in sbk.groupby('item')} if sbk is not None else {}
             items = [i for i in sf.index if i in bby]
             if not items: continue
@@ -71,11 +73,10 @@ def make_ev(mdl, share=0.5, min_ev_g=0.2, min_roi=0.1, routes=ROUTES, liq_frac=0
                 _, p24, p48 = label_and_past(fb, t, P)
                 g = sby.get(item)
                 if g is not None:
-                    gp = g.price.values
-                    if buy == sell:  # what we'd buy here is ours, not competition
-                        pass
+                    # On a relist route this still counts the listings we'd buy as competition
+                    # (the model was trained on whole books), so it understates relist demand.
                     cq = np.concatenate([[0], np.cumsum(g.qty.values)])
-                    ahead = cq[np.searchsorted(gp, P, side='left')]
+                    ahead = cq[np.searchsorted(g.price.values, P, side='left')]
                 else:
                     ahead = np.zeros(len(P))
                 for j in range(len(GRID)):
@@ -96,13 +97,17 @@ def make_ev(mdl, share=0.5, min_ev_g=0.2, min_roi=0.1, routes=ROUTES, liq_frac=0
                 best = None
                 for P, lam in zip(g.P.values, g.lam.values):
                     net = P * (1 - cut) - dep_u
-                    if prices[0] >= net: continue
                     # purchase sizes at each book level boundary, only levels cheaper than the net
                     ok = prices < net
                     if not ok.any(): continue
-                    cq = np.cumsum(qty[ok]); cc = np.cumsum((prices * qty)[ok])
-                    cq = np.minimum(cq, max_q); keep = np.concatenate([[True], cq[1:] > cq[:-1]])
-                    cq, cc, lv = cq[keep], cc[keep], prices[ok][keep]
+                    # units taken from each level, cut at max_q in total (the boundary level only
+                    # in part, and its cost with it)
+                    pq, qq = prices[ok], qty[ok]
+                    before = np.concatenate([[0], np.cumsum(qq)[:-1]])
+                    take = np.clip(max_q - before, 0, qq)
+                    keep = take > 0
+                    pq, take = pq[keep], take[keep]
+                    cq = np.cumsum(take); cc = np.cumsum(pq * take); lv = pq
                     if not len(cq): continue
                     es = expected_sold(lam, cq.astype(int), r)
                     # unsold units back at half the floor, never more than they cost

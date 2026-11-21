@@ -110,10 +110,10 @@ def evaluate(name, y, mu, df):
 
 
 def _auc(y, s):
-    o = np.argsort(s); y = y[o]; n1 = y.sum(); n0 = len(y) - n1
-    if n1 == 0 or n0 == 0: return np.nan
-    ranks = np.arange(1, len(y) + 1)
-    return (ranks[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)
+    """ROC AUC with tied scores sharing their average rank (the past-demand baselines tie a lot)."""
+    from sklearn.metrics import roc_auc_score
+    if y.min() == y.max(): return np.nan
+    return roc_auc_score(y, s)
 
 
 def main():
@@ -132,8 +132,10 @@ def main():
                                           min_samples_leaf=200, l2_regularization=1.0, random_state=0)
     model.fit(X[tr], y[tr])
     mu = model.predict(X[te])
-    base24 = df.past24_at.values[te]                      # "the last day repeats"
-    base48 = df.past48_at.values[te] / 2                  # the planner's rule: 48 h at >= P, halved
+    # Baselines are per 24 h; the label covers (t + 1 h, t + HORIZON h], so scale them to it.
+    span = (HORIZON - 1) / 24
+    base24 = df.past24_at.values[te] * span               # "the last day repeats"
+    base48 = df.past48_at.values[te] / 2 * span           # the planner's rule: 48 h at >= P, halved
     res = [evaluate('model', y[te], mu, df[te]), evaluate('planner: past 48h at >=P / 2', y[te], base48, df[te]),
            evaluate('past 24h at >=P', y[te], base24, df[te])]
     print(pd.DataFrame(res).round(3).to_string(index=False))

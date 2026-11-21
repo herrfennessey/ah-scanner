@@ -37,7 +37,12 @@ func main() {
 		panic(err)
 	}
 	var last sql.NullInt64
-	st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&last)
+	if err := st.DB.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM snapshot`).Scan(&last); err != nil {
+		panic(err)
+	}
+	if !last.Valid {
+		panic("no snapshots in " + *db)
+	}
 	type row struct {
 		At     string                        `json:"at"`
 		Style  string                        `json:"style"`
@@ -95,7 +100,12 @@ func main() {
 		}
 	}
 	if *out != "" {
-		b, _ := json.Marshal(all)
-		os.WriteFile(*out, b, 0o644)
+		b, err := json.Marshal(all)
+		if err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(*out, b, 0o644); err != nil {
+			panic(err)
+		}
 	}
 }
