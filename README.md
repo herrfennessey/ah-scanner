@@ -22,9 +22,10 @@ speed and trend, what they lately paid, and the purchases at or above the price 
 12 hours, sized to them). Neutral shoppers often pay well over either home price for cheap goods
 (Coarse Thread ~89c there against 12c at both homes), so neither home price caps it, but it must
 double the money if all sells (about 2.35x after the 15% cut): in the backtest these flips lost
-at under 1.6x and returned 93%+ at 3x and more. Without that evidence it falls back to selling to
-Alliance players for less than they pay at home (only for items the Alliance buys several times
-a day), never above the dearer of the Horde and Alliance prices.
+at under 1.6x and returned 93%+ at 3x and more. When Neutral's sales aren't tracked (a
+price_only house) it falls back to selling to Alliance players for less than they pay at home
+(only for items the Alliance buys several times a day), never above the dearer of the Horde and
+Alliance prices.
 
 ### Styles and plays
 

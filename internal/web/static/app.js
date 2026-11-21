@@ -746,7 +746,7 @@ async function renderStatus() {
 const KIND = {
   relist: ["Relist", "Buy listings dumped under the next price and relist just under it, in the same house."],
   cross: ["Cross", "Buy on one house, sell on the other."],
-  alliance: ["Alliance", "Buy on Horde, sell on Blackwater for less than Alliance players pay at home."],
+  alliance: ["Alliance", "Buy on Horde, sell on Blackwater: at what Blackwater buyers lately paid when on record, else for less than Alliance players pay at home."],
 };
 // Slider positions map to gold on a log scale: 5g … 2000g.
 const GOLD_MIN = 5, GOLD_MAX = 2000;
@@ -918,7 +918,7 @@ async function loadFlips(gold, style, fromScan = false) {
   if (!live.timer) startLive();
   const updated = `<p class="fine">Listings as of the scan <span id="scan-age">${ago(r.computed_at)}</span>; this page updates itself after each scan. About half of underpriced listings are gone within an hour of a scan.${
     r.confidence === "good" ? "" : r.confidence === "early" ? " Early estimate: under 3 days of sales history." : " Fair estimate: under 10 days of history."}${
-    r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Alliance flips are off."}</p>`;
+    r.alliance === "tracked" ? "" : " Alliance sales aren't tracked (price_only in config), so Horde → Blackwater flips go only on Blackwater's own buyers."}</p>`;
   if (!r.flips.length) {
     out.innerHTML = emptyState(`Nothing qualifies with ${gold}g for ${STYLE[style].label.toLowerCase()} trading right now`, "That's a normal answer: nothing cheap enough sells fast enough, at a price buyers are paying. Checking more often (active) adds camping, for busier, faster-moving markets. Here's what ruled things out:") + funnelTable(r.funnel) + updated;
     return;
