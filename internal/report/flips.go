@@ -521,7 +521,8 @@ type FlipOptions struct {
 	// SellBlackwater allows reselling on Blackwater (from the style).
 	SellBlackwater bool
 	Limit          int
-	// Horde → Blackwater: the Alliance must buy it fast and pay more at home.
+	// Horde → Blackwater without Blackwater's own evidence: the Alliance must buy it fast and
+	// pay more at home.
 	AllyEdge    float64 // your Blackwater price must be this much under Alliance's, default 0.05
 	AllyCapture float64 // share of Alliance demand assumed to come to Blackwater, default 0.1
 
@@ -580,7 +581,7 @@ type Flip struct {
 	Name      string `json:"name"`
 	Icon      string `json:"icon,omitempty"`
 	Quality   int    `json:"quality"`
-	Kind      string `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater, sold to Alliance players)"`
+	Kind      string `json:"kind" jsonschema:"relist (buy underpriced and relist in the same house), cross (between houses) or alliance (Horde to Blackwater: judged on Blackwater's own buyers when on record, otherwise sold to Alliance players under their home price)"`
 	BuyHouse  string `json:"buy_house"`
 	SellHouse string `json:"sell_house"`
 	BuyUnits  int64  `json:"buy_units"`
@@ -748,6 +749,8 @@ const (
 	// fallbackUndercut: chance a fresh cheapest listing is undercut within a round, when a
 	// house has no measurements at all (a busy AH undercuts most listings within hours).
 	fallbackUndercut = 0.5
+	// premiumMinROI: the least a Blackwater premium flip must return if all sells (see planOne).
+	premiumMinROI = 1.0
 	// campDelivered: share of its expected profit a camp delivered in the backtest (79%, over
 	// 516 trades, 2026-11-14 to 17).
 	campDelivered = 0.8
@@ -806,8 +809,20 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	var refFair int64 // market value the resale is judged against for a slide
 	var why string
 	window := o.p.WindowHours / 24
-	switch kind {
-	case "alliance":
+	// Horde → Blackwater with Blackwater's own purchases on record: judged on Blackwater alone.
+	// Its buyers often pay well over either home price for cheap goods (convenience: Coarse
+	// Thread ~89c on Blackwater against 12c at both homes, the purchases not reposts), so the
+	// Alliance and home-price caps would forbid trades its buyers make every day.
+	premium := kind == "alliance" && s.Evidence
+	// The premium is real for cheap goods at big markups and not for thin ones: in the backtest
+	// (Nov 17-20) these flips at under 1.6x lost 9%, at 3x+ returned 93% or more. So they must
+	// clear doubling the money if all sells (about 2.35x after the 15% cut), not the usual 20%.
+	minROI := o.MinROI
+	if premium {
+		minROI = max(minROI, premiumMinROI)
+	}
+	switch {
+	case kind == "alliance" && !premium:
 		// Rule: the Alliance must buy it fast, and pay more at home than our Blackwater price.
 		if ally == nil || !ally.Tracked {
 			return Flip{}, "slow"
@@ -816,9 +831,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		if a == nil || a.Sales < 5 || a.SalesPerDay < max(3, o.minSales) || (s.Volatile && !o.volatile) {
 			return Flip{}, "slow"
 		}
-		// Either market sliding: the Alliance's price at home, or Blackwater's own (it can fall
-		// while the Alliance's holds, and that's where the stock is sold).
-		if !o.volatile && (a.Trend < fallingTrend || (s.Evidence && s.Trend < fallingTrend)) {
+		if !o.volatile && a.Trend < fallingTrend {
 			return Flip{}, "falling"
 		}
 		allyPrice = a.Min
@@ -829,13 +842,6 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 			return Flip{}, "gap"
 		}
 		ceiling = int64(float64(allyPrice) * (1 - o.AllyEdge))
-		// And never above what buyers on Blackwater itself lately paid: its prices can slide
-		// while the Alliance's hold (Blackwater fell 19% in 4 days against 6% at home).
-		if s.Evidence {
-			if c := marketCeiling(s, o); c > 0 && c < ceiling {
-				ceiling = c
-			}
-		}
 		// A resale far under market value means a slide: judged against the lower of the two
 		// markets, since a Blackwater price steadily under the Alliance's isn't one.
 		refFair = a.Fair
@@ -845,7 +851,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		rate = math.Max(s.RobustPerDay, o.AllyCapture*a.RobustPerDay)
 		salesDay = a.SalesPerDay
 		why = fmt.Sprintf("Alliance pays %s at home and buys %.0f times a day; yours on Blackwater is cheaper", Gold(allyPrice), a.SalesPerDay)
-	default:
+	default: // relist, cross and the Blackwater premium
 		if s.Sales < 5 || s.SalesPerDay < o.minSales || (s.Volatile && !o.volatile) || s.Fair == 0 {
 			return Flip{}, "slow"
 		}
@@ -863,10 +869,17 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		refFair = s.Fair
 		rate = s.RobustPerDay
 		salesDay = s.SalesPerDay
+		if premium {
+			why = fmt.Sprintf("Blackwater's market value is %s; it sells %.0f times a day there", Gold(s.Fair), salesDay)
+			if s.Clearing > 0 {
+				why = fmt.Sprintf("Blackwater buyers paid a median %s over the last day, %.0f times a day", Gold(s.Clearing), salesDay)
+			}
+		}
 	}
-	if sell.Faction == "blackwater" {
+	if sell.Faction == "blackwater" && !premium {
 		// Every Blackwater buyer has a faction house at home: nobody pays more on Blackwater
 		// than the dearer of the two home prices (a stale market value can say otherwise).
+		// Not for a premium flip: its price is what Blackwater buyers themselves paid.
 		if home := blackwaterHomeCap(it, ally != nil); home > 0 && home-1 < ceiling {
 			ceiling = home - 1
 		}
@@ -884,7 +897,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		net := float64(sellAt)*(1-sell.Cut) - dep
 		// A unit is worth buying only if it keeps the minimum return and its margin also covers
 		// one relist deposit, so a few dear units can't sink the whole flip.
-		maxBuy := int64(min(net/(1+o.MinROI), net-dep))
+		maxBuy := int64(min(net/(1+minROI), net-dep))
 		units, cost, upTo, left = 0, 0, 0, 0
 		if relist {
 			// What we buy here leaves the band and comes back into it at our price, so the
@@ -943,10 +956,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		}
 	}
 	// demand is units/day bought at or above p lately (the recent floor of what our listing
-	// would have caught), or the window's sales rate when there's no evidence. For Alliance
-	// flips too: the Alliance's demand at home only says how many might come to Blackwater; the
-	// purchases on Blackwater at our price say how many did (sizing to the assumed capture left
-	// stock unsold: in the backtest this route returned 3g on 54g bought).
+	// would have caught), or the window's sales rate when there's no evidence. Horde → Blackwater
+	// is sized to Blackwater's purchases too, never to an assumed share of the Alliance's demand
+	// (sizing to that capture left stock unsold: in the backtest the route returned 3g on 54g).
 	demand := func(p int64) float64 {
 		if !s.Evidence {
 			return rate
@@ -981,7 +993,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		net := float64(sellAt)*(1-sell.Cut) - dep
 		p := float64(b.Book[0].P)
 		switch {
-		case p > net/(1+o.MinROI):
+		case p > net/(1+minROI):
 			return Flip{}, "gap"
 		case p > net-dep:
 			return Flip{}, "deposit" // a margin, but not one that survives being undercut
@@ -1001,7 +1013,7 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 	gross := int64(math.Round(float64(sellAt) * (1 - sell.Cut) * float64(units)))
 	profit := gross - cost - depositAtRisk
 	roi := float64(profit) / float64(cost)
-	if roi < o.MinROI {
+	if roi < minROI {
 		return Flip{}, "gap"
 	}
 	if profit < o.MinProfit {
@@ -1063,9 +1075,9 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		listed := o.p.ListHours / 24
 		hold = soldOut*math.Min(listed, math.Max(days, 1.0/24)) + (1-soldOut)*listed
 	}
-	if kind == "alliance" && s.Evidence {
+	if premium {
 		// What the page shows and the check-in rule uses: the Blackwater buyers it was sized to,
-		// not the Alliance capture that only bounds them.
+		// not every sale.
 		rate = demand(sellAt)
 	}
 	f := Flip{ItemID: it.Item, Variant: it.Variant, Name: it.Name, Icon: it.Icon, Quality: it.Quality, Kind: kind, BuyHouse: buy.Faction, SellHouse: sell.Faction,
