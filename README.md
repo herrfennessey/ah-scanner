@@ -55,7 +55,9 @@ checks this over random markets). Old names still work: `regular` and the risk l
 On what buyers do, not what sellers ask:
 
 - The resale is capped at the **median price paid** over the last 24 hours, so a market value
-  left over from before a crash can't make a dump look like a bargain.
+  left over from before a crash can't make a dump look like a bargain. It's also capped at the
+  7-day market value, except on Neutral → Horde when the price isn't falling: a market that
+  moved up sells at what buyers pay now (in the backtest the same for relists lost money).
 - At least **2 purchases at or above the resale price** in the last 12 hours. The amount bought
   must fit the purchases at or above that price over the last 2 days, and your units plus
   everything listed within 10% of your price must sell within the play's window.
