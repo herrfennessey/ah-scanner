@@ -21,6 +21,9 @@ Rebuild the cache whenever you copy a fresh database to `data/ahc.db`. One strat
 | `harness.py` | `Market`, `Order`, `Rules`, `run`, `summary`, `report`, `stress`, `sweep` |
 | `strategies.py` | `make_dip`, `make_spread`, `make_planner_csv` (replays `ahc backtest -csv`) |
 | `example.py` | how to use it |
+| `fillmodel.py` | demand model: units bought at or above a list price over the next 24 h (gradient boosting, Poisson loss), against the planner's estimate on held-out days |
+| `evstrat.py` | expected-value strategy from that model: list price and size per item, funded by EV per gold, scored against the planner and spreads |
+| `flipdiag/` | Go: rebuilds the flip inputs at past scans and prints what `PlanFlips` offers per route (`-item` shows why one item was rejected); build it from two checkouts to compare planner versions |
 
 ## Writing a strategy
 

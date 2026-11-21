@@ -223,7 +223,9 @@ def _play(m, r, o, t, units, cost, bought, used):
     end = t + r.window_h * H
     fl_end = m.floor(o.sell, o.item, end)
     if np.isnan(fl_end): fl_end = 0.0
-    liq_unit = min(fl_end, P) * (1 - cut)
+    # Unsold stock is worth at most what it cost: a high floor nobody buys at is no profit (a
+    # strategy could otherwise "earn" by buying cheap stock it never sells).
+    liq_unit = min(min(fl_end, P) * (1 - cut), cost / units)
     liq = {'zero': 0.0, 'half': 0.5 * liq_unit * rem, 'floor': liq_unit * rem}
     cf.append((end if rem > 0 else last, liq[r.liq] + reserve))
     base = rev - cost - deps
