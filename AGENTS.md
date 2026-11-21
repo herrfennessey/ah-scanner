@@ -140,6 +140,10 @@ image) is `fix:` or `feat:`; only those two types release.
   or commit you expect.
 - Stacked PRs: merge the base PR, wait for GitHub to retarget the next one to `main`, then merge
   it. A PR merged into a branch that already merged doesn't reach `main` or the image.
+- To bring a PR branch up to date, rebase it onto `main`; don't merge `main` into it. go-semantic-
+  release walks commits by date and stops at the last release, so a `feat`/`fix` committed before
+  a release that merged in the meantime is skipped and nothing is released (#24 shipped untagged
+  this way). If it happens, release with an empty commit: `git commit --allow-empty -m "feat(...): ..."`.
 
 ## Before pushing
 
