@@ -74,7 +74,7 @@ type FlipItem struct {
 	Name    string               `json:"name"`
 	Icon    string               `json:"icon,omitempty"`
 	Quality int                  `json:"quality"`
-	Deposit int64                `json:"deposit"` // estimated faction-house deposit per unit
+	Deposit int64                `json:"deposit"` // faction-house deposit per unit for an 8-hour listing (see depositHours)
 	Houses  map[string]*FlipStat `json:"houses"`  // by faction
 }
 
@@ -885,7 +885,11 @@ func planOne(it FlipItem, b, s *FlipStat, buy, sell FlipHouse, kind string, ally
 		}
 	}
 	relist := kind == "relist"
-	dep := float64(it.Deposit) // deposit per unit on the house we sell on
+	// Deposit per unit on the house we sell on, for the listing this play posts: it.Deposit is
+	// for an 8-hour listing and scales with the duration (Journalator: 2h, 8h and 24h listings
+	// paid 5%, 20% and 60% of vendor value on Horde, and 5x that on Blackwater). Charging the
+	// 8-hour rate for a 24-hour hold under-charged every hold and check-in by 3x.
+	dep := float64(it.Deposit) * o.p.ListHours / depositHours
 	if sell.DepositMult > 0 {
 		dep *= sell.DepositMult
 	}

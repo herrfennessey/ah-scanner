@@ -109,6 +109,8 @@ type House struct {
 	Cut      float64 `json:"cut"`
 	ViewOnly bool    `json:"view_only"` // not tradeable: shown for reference (Alliance from a Horde character)
 	Tracked  bool    `json:"tracked"`   // individual auctions tracked, so sales are known
+
+	depositMult float64 // deposit_factor: Blackwater's deposit is 5x a faction house's
 }
 
 func (s *Server) houseList(ctx context.Context) ([]House, error) {
@@ -125,7 +127,7 @@ func (s *Server) houseList(ctx context.Context) ([]House, error) {
 		} else {
 			s.Store.DB.QueryRowContext(ctx, `SELECT name FROM house WHERE id=?`, id).Scan(&name)
 		}
-		hh := House{ID: id, Faction: h.Faction, Name: name, Cut: h.AHCut(), ViewOnly: !h.Tradeable(), Tracked: !h.PriceOnly}
+		hh := House{ID: id, Faction: h.Faction, Name: name, Cut: h.AHCut(), ViewOnly: !h.Tradeable(), Tracked: !h.PriceOnly, depositMult: h.DepositMult()}
 		s.Store.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(n_auctions),0), COALESCE(MAX(fetched_at),0) FROM snapshot
 			WHERE id IN (SELECT MAX(id) FROM snapshot WHERE house_id=? GROUP BY kind)`, id).Scan(&hh.Listings, &hh.LastScan)
 		s.Store.DB.QueryRowContext(ctx, `SELECT count(DISTINCT item_id) FROM item_snapshot
@@ -623,7 +625,7 @@ func (s *Server) sell(w http.ResponseWriter, r *http.Request) {
 	}
 	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
 	a, err := report.AnalyzeSell(r.Context(), s.Store, report.SellOptions{
-		Options: report.Options{HouseID: h.ID, HouseName: h.Name, Cut: h.Cut, DepositRate: s.Cfg.DepositRate, Days: days, Now: time.Now()},
+		Options: report.Options{HouseID: h.ID, HouseName: h.Name, Cut: h.Cut, DepositRate: s.Cfg.DepositRate * h.depositMult, Days: days, Now: time.Now()},
 		Item:    r.PathValue("id"), Variant: r.URL.Query().Get("variant"), BlockHours: 3, AmbiguousWeight: s.Cfg.AmbiguousWeight,
 	})
 	if err != nil {

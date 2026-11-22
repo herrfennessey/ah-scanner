@@ -359,8 +359,8 @@ func TestFallingMarketOnlyAtHighRisk(t *testing.T) {
 
 func TestHighDepositBlackwaterSkipped(t *testing.T) {
 	// The Vibrant Plume case: 8s on Horde, ~17s on Blackwater and ~18.7s Alliance, but it vendors
-	// for 8s25c, so a Blackwater listing costs ~8s25c of deposit per unit (5× the faction
-	// house's 1s65c). Undercut once and the deposit wipes out the margin.
+	// for 8s25c, so a 24-hour Blackwater listing costs ~24s75c of deposit per unit (5× the
+	// faction house's 1s65c 8-hour rate, times 3). Undercut once and the deposit wipes out the margin.
 	bwDep := FlipHouse{ID: 116, Faction: "blackwater", Cut: 0.15, Tracked: true, DepositMult: 5}
 	it := FlipItem{Item: 5117, Name: "Vibrant Plume", Deposit: 165, Houses: map[string]*FlipStat{
 		"horde":      {Fair: 877, Min: 804, Sales: 400, SalesPerDay: 180, RobustPerDay: 1500, Book: []FlipLevel{{804, 200}}},
@@ -376,27 +376,30 @@ func TestHighDepositBlackwaterSkipped(t *testing.T) {
 			}
 		}
 	}
-	// The same flip with a faction-house deposit would pass: the deposit is what stops it.
+	// The same flip with a light deposit would pass: the deposit is what stops it. (At real
+	// 24-hour rates even Horde's 1x, 4s95c a unit, would sink it.)
 	bwDep.DepositMult = 1
 	in.Houses[1] = bwDep
+	in.Items[0].Deposit = 30
 	if f, _, _ := PlanFlips(in, FlipOptions{Gold: g(40), Style: StyleActive}); len(f) == 0 {
-		t.Fatal("with a 1x deposit the flip should exist; the test isn't testing the deposit")
+		t.Fatal("with a light deposit the flip should exist; the test isn't testing the deposit")
 	}
 }
 
 func TestDepositsWeighOnExpectedProfit(t *testing.T) {
-	// 4 units bought at 1g, sold at ~2g with a 40s deposit each: 2g profit if it all sells,
-	// less once missed rounds lose 1.6g of deposit each. A 90s deposit eats the margin.
-	mk := func(dep int64) FlipItem {
-		return FlipItem{Item: 11, Name: "Deposit Heavy", Deposit: dep, Houses: map[string]*FlipStat{
+	// 4 units bought at 1g, sold at ~2g with a 42s deposit each for a 24h listing: 2g profit if
+	// it all sells, less once missed rounds lose 1.68g of deposit each. A 90s deposit eats the
+	// margin. FlipItem.Deposit is the 8-hour rate, a third of the 24-hour one.
+	mk := func(dep24 int64) FlipItem {
+		return FlipItem{Item: 11, Name: "Deposit Heavy", Deposit: dep24 * depositHours / 24, Houses: map[string]*FlipStat{
 			"blackwater": {Fair: g(2), Min: g(1), Book: []FlipLevel{{g(1), 4}}},
 			"horde":      {Fair: g(2), Min: g(2), Sales: 200, SalesPerDay: 40, RobustPerDay: 400},
 		}}
 	}
 	for _, r := range Styles {
-		f := planRisk([]FlipItem{mk(4000)}, 40, r)
-		light := planRisk([]FlipItem{mk(100)}, 40, r)
-		if len(f) != 1 || len(light) != 1 || f[0].DepositAtRisk != 16000 || f[0].Expected > f[0].Profit || f[0].Expected >= light[0].Expected {
+		f := planRisk([]FlipItem{mk(4200)}, 40, r)
+		light := planRisk([]FlipItem{mk(300)}, 40, r)
+		if len(f) != 1 || len(light) != 1 || f[0].DepositAtRisk != 4*1400*int64(f[0].ListHours)/depositHours || f[0].Expected > f[0].Profit || f[0].Expected >= light[0].Expected {
 			t.Fatalf("%s: %+v (light deposit %+v)", r, f, light)
 		}
 		if f := planRisk([]FlipItem{mk(9000)}, 40, r); len(f) != 0 {
@@ -409,7 +412,7 @@ func TestBufferPicksTheUnitsThatSurviveIt(t *testing.T) {
 	// Codex's case: one unit at 10s and seven at 1.3g on Blackwater, resale ~2g on Horde, 40s
 	// deposit per unit. Low risk must buy just the 10s unit (~60s after three lost deposits),
 	// not reject the item because the 1.3g units can't carry the buffer.
-	it := FlipItem{Item: 12, Name: "Codex Buffer", Deposit: 4000, Houses: map[string]*FlipStat{
+	it := FlipItem{Item: 12, Name: "Codex Buffer", Deposit: 4000 * depositHours / 24, Houses: map[string]*FlipStat{
 		"blackwater": {Fair: g(2), Min: 1000, Book: []FlipLevel{{1000, 1}, {g(1.3), 7}}},
 		"horde":      {Fair: g(2), Min: g(2), Sales: 200, SalesPerDay: 40, RobustPerDay: 400},
 	}}

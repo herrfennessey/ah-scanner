@@ -73,9 +73,12 @@ On what buyers do, not what sellers ask:
 doesn't sell costs a relist (the deposit, and a typical undercut of about 3%) only when it was
 undercut, or the deposit when the listing ran out; holds never relist. Stock still unsold at the
 end of the window is valued at what buyers are paying then. It's never shown above the profit if
-everything sells (which counts one lost deposit). Deposits are 20% of the vendor price with a 1s
-minimum per auction (confirmed against Journalator posting logs), 5× on Neutral
-(`deposit_factor`); the cut is 5% on faction houses and 15% on Neutral.
+everything sells (which counts one lost deposit). Deposits scale with the listing
+length: 5%, 20% and 60% of the vendor price for 2, 8 and 24 hours, 1s minimum per auction, and
+5× on Neutral (`deposit_factor`), so a 24-hour Neutral listing costs 3× the item's vendor
+price (from 179 Journalator postings). The deposit comes back when the item sells. Each play is
+charged for the listing it posts (24 h for hold and check-in, 8 h for camp). The cut is 5% on
+faction houses and 15% on Neutral.
 
 Flips are ranked by expected profit, not profit per day: gold sitting idle isn't the limit, and
 the chance it sells is already weighed in. **Going fast** marks underpriced listings of the kind
