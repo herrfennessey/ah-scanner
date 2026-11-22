@@ -110,10 +110,13 @@ type Config struct {
 
 	// Retention. item_daily is kept forever.
 	AuctionRetentionDays int `yaml:"auction_retention_days"` // closed auctions and partial-sale events
-	SnapshotFullDays     int `yaml:"snapshot_full_days"`     // item_snapshot at full resolution
-	SnapshotThinHours    int `yaml:"snapshot_thin_hours"`    // after that, keep one snapshot per this many hours
-	SnapshotMaxDays      int `yaml:"snapshot_max_days"`      // item_snapshot dropped entirely after this
-	BackupKeep           int `yaml:"backup_keep"`            // nightly zstd-compressed backups kept
+	// FlipHistoryDays keeps each scan's flip inputs (~2 MB compressed, ~50 MB a day) so the
+	// backtest replays them instead of rebuilding; 0 keeps none.
+	FlipHistoryDays   int `yaml:"flip_history_days"`
+	SnapshotFullDays  int `yaml:"snapshot_full_days"`  // item_snapshot at full resolution
+	SnapshotThinHours int `yaml:"snapshot_thin_hours"` // after that, keep one snapshot per this many hours
+	SnapshotMaxDays   int `yaml:"snapshot_max_days"`   // item_snapshot dropped entirely after this
+	BackupKeep        int `yaml:"backup_keep"`         // nightly zstd-compressed backups kept
 
 	// StaleAfter flags a feed whose polls succeed but bring no new data (endpoint frozen).
 	StaleAfter time.Duration `yaml:"stale_after"`
@@ -154,6 +157,7 @@ func Default() Config {
 		ItemLookupsPerCycle:  4000,
 		AmbiguousWeight:      0.25,
 		AuctionRetentionDays: 30,
+		FlipHistoryDays:      10,
 		SnapshotFullDays:     30,
 		SnapshotThinHours:    6,
 		SnapshotMaxDays:      180,

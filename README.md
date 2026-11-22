@@ -100,6 +100,13 @@ the cheapest when the recorded queue cheaper than it is too long; a camp reliste
 undercut; never under cost). Unsold stock is valued at the floor when the window ends. `-queue 0.5`
 or `-queue 2` scales the check-in queue to test the rule. `-csv` lists every trade.
 
+The inputs as they were then come from `flip_history`: the collector keeps each scan's flip
+inputs (compressed, `flip_history_days`), so a backtest replays exactly what the planner saw and
+mostly just plans and scores. Planning times with nothing stored are rebuilt from the auction
+history on every core and saved for next time. Stored inputs carry a format version
+(`report.InputsVersion`, bumped whenever their computation changes) and other versions are
+rebuilt; `-inputs rebuild` rebuilds everything.
+
 To look at the UI without deploying, run it on a copy of the database: point a config's
 `data_dir` at the copy and run `ahc serve -rebuild`. `-rebuild` recomputes the flips from the
 copy first (the collector normally does that after each scan), using the houses stored in it.
@@ -224,7 +231,8 @@ ahc sell "Heavy Quiver"     when and at what price to post
 ahc movers -house blackwater
 ahc deals -min-discount 0.4
 ahc item 4304 -days 30
-ahc backtest -days 3        replay the flip planner and score it (-gold, -every, -queue, -csv)
+ahc backtest -days 3        replay the flip planner and score it (-gold, -every, -queue, -csv,
+                            -inputs stored|rebuild, -workers N)
 ```
 
 Report flags: `-house horde|blackwater`, `-days N`, `-min-sold N`, `-csv`, `-limit N`.
@@ -342,6 +350,7 @@ against a full week of real data.
 | `sale_event` (partial commodity buys only) | 30 days | < 0.3 GB |
 | `item_snapshot` (per-item price per snapshot) | 30 days full, 6-hourly to 180 days | ~1.8 GB |
 | `item_daily` | forever | +0.7 GB/year |
+| `flip_history` (each scan's flip inputs, zstd) | `flip_history_days` (10) | ~50 MB/day, ~0.5 GB |
 | Alliance auctions (view-only, tracked for its sales) | 30 days | ~4–5 GB more |
 
 ## Known gaps

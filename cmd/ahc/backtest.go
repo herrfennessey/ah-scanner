@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sort"
 	"text/tabwriter"
 	"time"
@@ -39,8 +40,20 @@ func runBacktest(ctx context.Context, cfg config.Config, st *store.Store, f *fla
 			return err
 		}
 	}
+	// Rebuilding inputs allocates heavily; collecting garbage less often is ~10% faster.
+	debug.SetGCPercent(400)
+	// A read-only pool beside the writer, so missing inputs rebuild on several cores at once.
+	read, err := store.OpenReadOnly(cfg.DBPath(), f.workers)
+	if err != nil {
+		return err
+	}
+	defer read.Close()
+	start := time.Now()
 	trades, err := backtest.Run(ctx, st, backtest.Options{From: now.AddDate(0, 0, -f.days), To: now,
-		Every: f.every, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate, QueueScale: f.queue})
+		Every: f.every, Gold: int64(f.gold * 10000), DepositRate: cfg.DepositRate, QueueScale: f.queue,
+		Inputs: f.inputs, Read: read, Workers: f.workers,
+		Log: func(format string, args ...any) { fmt.Fprintf(os.Stderr, "ahc: "+format+"\n", args...) }})
+	fmt.Fprintf(os.Stderr, "ahc: backtest took %s\n", time.Since(start).Round(time.Second))
 	if err != nil {
 		return err
 	}

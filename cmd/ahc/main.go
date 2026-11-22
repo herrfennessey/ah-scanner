@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -44,7 +45,7 @@ Reports (common flags: -house horde|blackwater, -days N, -min-sold N, -csv, -lim
   ahc item <item>        daily history of one item
   ahc backtest           replay the flip planner over the last -days (default 3) and score each
                          flip by what sold afterwards, per trading style and play (-gold G,
-                         -every 1h, -queue 1, -csv)
+                         -every 1h, -queue 1, -csv; -inputs stored|rebuild, -workers N)
 
 <item> is an item ID or (part of) its name. Config: -config path (default $AHC_CONFIG or /config.yaml).
 `
@@ -78,6 +79,8 @@ type flags struct {
 	every                  time.Duration
 	queue                  float64
 	rebuild                bool
+	inputs                 string
+	workers                int
 }
 
 func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*flags, []string, error) {
@@ -101,6 +104,8 @@ func parseFlags(cmd string, args []string, defDays int, defMinSold float64) (*fl
 	f.fs.DurationVar(&f.every, "every", time.Hour, "backtest: plan at most once per this")
 	f.fs.BoolVar(&f.rebuild, "rebuild", false, "serve: rebuild the flips from this database first (for a copy, with no collector running)")
 	f.fs.Float64Var(&f.queue, "queue", 1, "backtest: scale the check-in relist queue (under 1 relists sooner)")
+	f.fs.StringVar(&f.inputs, "inputs", "stored", "backtest: stored (replay flip_history, rebuild what's missing) or rebuild (all)")
+	f.fs.IntVar(&f.workers, "workers", max(1, runtime.NumCPU()/2), "backtest: planning times to rebuild at once")
 	// Allow flags after positional args: ahc sell "Heavy Quiver" -house blackwater
 	var pos []string
 	rest := args

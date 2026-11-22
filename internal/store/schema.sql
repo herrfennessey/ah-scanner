@@ -54,6 +54,11 @@ CREATE INDEX IF NOT EXISTS item_daily_day ON item_daily (house_id, day);
 -- flip inputs, recomputed after each publish (single row)
 CREATE TABLE IF NOT EXISTS flip_cache (id INTEGER PRIMARY KEY CHECK (id = 1), computed_at INT, data BLOB);
 
+-- flip inputs over time, zstd-compressed JSON (~2 MB a scan), for the backtest: 'live' rows are
+-- what the collector computed after a scan, 'rebuilt' rows what a backtest reconstructed for a
+-- past planning time. Pruned after flip_history_days.
+CREATE TABLE IF NOT EXISTS flip_history (computed_at INTEGER PRIMARY KEY, source TEXT, version TEXT, data BLOB);
+
 -- one-off markers (e.g. completed backfills)
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
