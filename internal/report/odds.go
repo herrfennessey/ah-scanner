@@ -9,6 +9,11 @@ import "math"
 // minDeposit is the smallest deposit an auction costs (1s), seen in Journalator posting logs.
 const minDeposit = 100
 
+// depositHours is the listing duration deposit_rate is quoted for. The deposit scales with the
+// duration: 179 Journalator postings paid 5%, 20% and 60% of vendor value for 2, 8 and 24 hours
+// on Horde (1:4:12), and 100% / 300% for 8 / 24 hours on Blackwater (its 5x).
+const depositHours = 8
+
 // undercutRatio is the median new/old price when a newer listing undercuts the cheapest one
 // (Horde 0.969, Blackwater 0.964): what a relist gives up to be cheapest again.
 const undercutRatio = 0.967

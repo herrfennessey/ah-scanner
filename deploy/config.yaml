@@ -50,7 +50,8 @@ snapshot_max_days: 180      # then dropped (daily rows are kept forever)
 backup_keep: 3              # nightly zstd-compressed backups in /data/backup
 
 ambiguous_weight: 0.25      # share of cancelled / expired-or-sold units counted as sold (calibrate in week 1)
-deposit_rate: 0.20          # deposit ≈ vendor sell price × this (unconfirmed for Forever)
+deposit_rate: 0.20          # deposit = vendor sell price × this for an 8h listing, × hours/8 for others
+                            # (2h 5%, 24h 60%; Blackwater 5×), from 179 Journalator postings
 
 alert:
   url: ""                   # ntfy topic URL or Home Assistant webhook; empty = no push alerts

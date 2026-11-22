@@ -118,9 +118,9 @@ type Config struct {
 	// StaleAfter flags a feed whose polls succeed but bring no new data (endpoint frozen).
 	StaleAfter time.Duration `yaml:"stale_after"`
 
-	// DepositRate estimates a faction house's AH deposit as a share of the item's vendor sell
-	// price (unconfirmed for Forever; set it from what the in-game posting window shows).
-	// Each house scales it by its deposit_factor.
+	// DepositRate is a faction house's AH deposit for an 8-hour listing as a share of the item's
+	// vendor sell price; other durations scale by hours/8 (2h 5%, 8h 20%, 24h 60%, from 179
+	// Journalator postings). Each house scales it by its deposit_factor.
 	DepositRate float64 `yaml:"deposit_rate"`
 
 	Alert Alert `yaml:"alert"`
