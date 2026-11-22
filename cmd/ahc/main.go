@@ -273,6 +273,7 @@ func reportOptions(ctx context.Context, cfg config.Config, st *store.Store, f *f
 		return o, fmt.Errorf("house %q is not in config.yaml", f.house)
 	}
 	o.Cut = h.AHCut()
+	o.DepositRate *= h.DepositMult()
 	o.HouseID = h.ID
 	if o.HouseID == 0 {
 		id, _, err := st.HouseByFaction(ctx, h.Faction)

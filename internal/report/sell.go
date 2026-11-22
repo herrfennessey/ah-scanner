@@ -434,7 +434,7 @@ func verdictLines(a *SellAnalysis, o SellOptions) []string {
 		lines = append(lines, fmt.Sprintf("Not enough finished auctions to rank posting times yet (each time block needs %d).", o.MinSamples))
 	}
 	if a.Deposit > 0 {
-		lines = append(lines, fmt.Sprintf("Deposit about %s per listing, lost only if it doesn't sell (%.0f%% of vendor price, unconfirmed for Forever).",
+		lines = append(lines, fmt.Sprintf("Deposit about %s for an 8h listing (3x for 24h), lost only if it doesn't sell (%.0f%% of vendor price per 8 hours listed).",
 			Gold(a.Deposit), o.DepositRate*100))
 	}
 	return lines
