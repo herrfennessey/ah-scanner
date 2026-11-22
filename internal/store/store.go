@@ -52,6 +52,25 @@ func Open(path string) (*Store, error) {
 	return &Store{DB: db}, nil
 }
 
+// OpenReadOnly opens an existing database for reading only, with up to conns connections, so
+// several goroutines can query it at once (WAL lets them read beside the writer). No schema or
+// migrations are applied.
+func OpenReadOnly(path string, conns int) (*Store, error) {
+	// Memory-mapped reads: pages come from the OS file cache with no read call each, shared by
+	// every connection (each connection's own page cache is only 2 MB by default).
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=mmap_size(17179869184)&_pragma=cache_size(-65536)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(max(1, conns))
+	db.SetMaxIdleConns(max(1, conns))
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{DB: db}, nil
+}
+
 func (s *Store) Close() error { return s.DB.Close() }
 
 func (s *Store) UpsertHouse(ctx context.Context, id int64, name, faction string) error {
@@ -777,6 +796,53 @@ func (s *Store) LoadFlipCache(ctx context.Context) (int64, []byte, error) {
 		return 0, nil, nil
 	}
 	return t, b, err
+}
+
+// FlipHistorySource says where a flip_history row came from.
+const (
+	FlipHistoryLive    = "live"    // computed by the collector after a scan
+	FlipHistoryRebuilt = "rebuilt" // reconstructed by a backtest for a past planning time
+)
+
+// FlipHistoryRow is one stored set of flip inputs (Data is compressed and opaque to the store).
+type FlipHistoryRow struct {
+	At     int64
+	Source string
+	Data   []byte
+}
+
+// SaveFlipHistory stores flip inputs computed at the given time, replacing any row at that time.
+func (s *Store) SaveFlipHistory(ctx context.Context, at int64, source, version string, data []byte) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO flip_history (computed_at, source, version, data) VALUES (?,?,?,?)
+		ON CONFLICT(computed_at) DO UPDATE SET source=excluded.source, version=excluded.version, data=excluded.data`, at, source, version, data)
+	return err
+}
+
+// FlipHistory returns the stored flip inputs computed in [from, to], oldest first.
+func (s *Store) FlipHistory(ctx context.Context, from, to int64) ([]FlipHistoryRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT computed_at, source, data FROM flip_history WHERE computed_at>=? AND computed_at<=? ORDER BY computed_at`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FlipHistoryRow
+	for rows.Next() {
+		var r FlipHistoryRow
+		if err := rows.Scan(&r.At, &r.Source, &r.Data); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// PruneFlipHistory deletes stored flip inputs computed before the given time.
+func (s *Store) PruneFlipHistory(ctx context.Context, before int64) (int64, error) {
+	r, err := s.DB.ExecContext(ctx, `DELETE FROM flip_history WHERE computed_at<?`, before)
+	if err != nil {
+		return 0, err
+	}
+	return r.RowsAffected()
 }
 
 // Meta returns a stored marker value, or "" if unset.

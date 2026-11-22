@@ -311,3 +311,27 @@ func TestReclassifyGearSales(t *testing.T) {
 		}
 	}
 }
+
+func TestFlipHistory(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	for _, r := range []FlipHistoryRow{{100, FlipHistoryLive, []byte("a")}, {200, FlipHistoryRebuilt, []byte("b")}, {300, FlipHistoryLive, []byte("c")}} {
+		if err := st.SaveFlipHistory(ctx, r.At, r.Source, "v", r.Data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Saving at the same time replaces the row.
+	if err := st.SaveFlipHistory(ctx, 200, FlipHistoryRebuilt, "v2", []byte("b2")); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.FlipHistory(ctx, 150, 300)
+	if err != nil || len(rows) != 2 || rows[0].At != 200 || string(rows[0].Data) != "b2" || rows[1].Source != FlipHistoryLive {
+		t.Fatalf("%+v %v", rows, err)
+	}
+	if n, err := st.PruneFlipHistory(ctx, 250); err != nil || n != 2 {
+		t.Fatalf("pruned %d (%v)", n, err)
+	}
+	if rows, _ := st.FlipHistory(ctx, 0, 1000); len(rows) != 1 || rows[0].At != 300 {
+		t.Fatalf("%+v", rows)
+	}
+}

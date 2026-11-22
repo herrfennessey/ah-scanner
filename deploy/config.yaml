@@ -44,6 +44,7 @@ item_lookups_per_cycle: 4000 # item names/icons, 2 requests each; a new install 
 
 # Retention (steady state ≈ 7 GB database at ~1M new auctions/day, see README).
 auction_retention_days: 30  # closed auctions + partial-sale events (sell timing reads ≤ 28 days)
+flip_history_days: 10       # each scan's flip inputs (~50 MB/day compressed), replayed by ahc backtest
 snapshot_full_days: 30      # per-item price snapshots at full resolution
 snapshot_thin_hours: 6      # then one per 6 hours
 snapshot_max_days: 180      # then dropped (daily rows are kept forever)
