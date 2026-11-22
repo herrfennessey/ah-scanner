@@ -153,24 +153,37 @@ func TestInputsReplayedFromHistoryAndRebuiltOnce(t *testing.T) {
 	ctx := context.Background()
 	houses := []report.FlipHouse{{ID: 113, Faction: "horde", Cut: 0.05, Tracked: true}}
 	times := []int64{t0 + 3600, t0 + 7200}
+	save := func(at int64, source, ver string, spanDays float64) {
+		t.Helper()
+		z, err := report.EncodeInputs(&report.FlipInputs{ComputedAt: at, SpanDays: spanDays})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveFlipHistory(ctx, at, source, ver, z); err != nil {
+			t.Fatal(err)
+		}
+	}
+	load := func(at int64) *report.FlipInputs {
+		t.Helper()
+		z, err := st.FlipHistoryData(ctx, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, _ := report.DecodeInputs(z)
+		return in
+	}
 	// The collector's own inputs for the first scan, computed a minute after it.
-	live, err := report.EncodeInputs(&report.FlipInputs{ComputedAt: times[0] + 60, SpanDays: 42})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SaveFlipHistory(ctx, times[0]+60, store.FlipHistoryLive, "test", live); err != nil {
-		t.Fatal(err)
-	}
+	save(times[0]+60, store.FlipHistoryLive, report.InputsVersion, 42)
 	o := Options{Houses: houses, DepositRate: 0.2}
 	got, err := inputsFor(ctx, st, o, times)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if in, _ := report.DecodeInputs(got[times[0]]); in == nil || in.SpanDays != 42 {
-		t.Fatalf("first time should replay the live inputs: %+v", in)
+	if got[0] != (plan{times[0], times[0] + 60}) || load(got[0].row).SpanDays != 42 {
+		t.Fatalf("first time should replay the live inputs: %+v", got)
 	}
-	if in, _ := report.DecodeInputs(got[times[1]]); in == nil || in.ComputedAt != times[1] {
-		t.Fatalf("second time should be rebuilt at that time: %+v", in)
+	if got[1] != (plan{times[1], times[1]}) || load(got[1].row).ComputedAt != times[1] {
+		t.Fatalf("second time should be rebuilt at that time: %+v", got)
 	}
 	// The rebuilt one was saved: a second pass finds both stored and rebuilds nothing.
 	var logged []string
@@ -182,11 +195,46 @@ func TestInputsReplayedFromHistoryAndRebuiltOnce(t *testing.T) {
 		t.Fatalf("%q", logged)
 	}
 	// "rebuild" ignores what's stored.
-	o.Inputs = "rebuild"
-	if got, _ := inputsFor(ctx, st, o, times); got[times[0]] == nil {
-		t.Fatal("rebuild should rebuild")
-	} else if in, _ := report.DecodeInputs(got[times[0]]); in.SpanDays == 42 {
-		t.Fatal("rebuild replayed the live inputs")
+	o.Inputs, o.Log = "rebuild", nil
+	if got, err := inputsFor(ctx, st, o, times); err != nil || got[0] != (plan{times[0], times[0]}) || load(got[0].row).SpanDays == 42 {
+		t.Fatalf("rebuild should rebuild: %+v %v", got, err)
+	}
+	o.Inputs = "rebuilt"
+	if _, err := inputsFor(ctx, st, o, times); err == nil {
+		t.Fatal("an unknown -inputs should fail, not replay stale inputs")
+	}
+}
+
+func TestLiveInputsPlanAtTheScansTheyHold(t *testing.T) {
+	st, t0 := scenario(t)
+	ctx := context.Background()
+	houses := []report.FlipHouse{{ID: 113, Faction: "horde", Cut: 0.05, Tracked: true}}
+	times := []int64{t0 + 3600, t0 + 7200}
+	// Another feed is fetched 2 minutes after the first planning time, and the collector's
+	// refresh after that batch runs at +5 minutes: its inputs hold the later feed too.
+	if _, err := st.ApplySnapshot(ctx, store.Snapshot{HouseID: 116, Kind: listing.Commodity, FetchedAt: times[0] + 120, SHA256: "bw"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	z, _ := report.EncodeInputs(&report.FlipInputs{ComputedAt: times[0] + 300, SpanDays: 42})
+	if err := st.SaveFlipHistory(ctx, times[0]+300, store.FlipHistoryLive, report.InputsVersion, z); err != nil {
+		t.Fatal(err)
+	}
+	// Live inputs built by older input code are never replayed.
+	z, _ = report.EncodeInputs(&report.FlipInputs{ComputedAt: times[1] + 60, SpanDays: 7})
+	if err := st.SaveFlipHistory(ctx, times[1]+60, store.FlipHistoryLive, "0", z); err != nil {
+		t.Fatal(err)
+	}
+	got, err := inputsFor(ctx, st, Options{Houses: houses, DepositRate: 0.2}, times)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Planning (and scoring) moves to the newest scan those inputs hold, so nothing in them is
+	// from after the planning time.
+	if got[0] != (plan{times[0] + 120, times[0] + 300}) {
+		t.Fatalf("want the plan at the later feed's scan: %+v", got)
+	}
+	if got[1] != (plan{times[1], times[1]}) {
+		t.Fatalf("old-version inputs should be rebuilt: %+v", got)
 	}
 }
 

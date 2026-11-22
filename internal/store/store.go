@@ -804,11 +804,11 @@ const (
 	FlipHistoryRebuilt = "rebuilt" // reconstructed by a backtest for a past planning time
 )
 
-// FlipHistoryRow is one stored set of flip inputs (Data is compressed and opaque to the store).
+// FlipHistoryRow describes one stored set of flip inputs; FlipHistoryData loads the inputs.
 type FlipHistoryRow struct {
-	At     int64
-	Source string
-	Data   []byte
+	At      int64
+	Source  string
+	Version string // the inputs format they were built with (report.InputsVersion)
 }
 
 // SaveFlipHistory stores flip inputs computed at the given time, replacing any row at that time.
@@ -818,9 +818,10 @@ func (s *Store) SaveFlipHistory(ctx context.Context, at int64, source, version s
 	return err
 }
 
-// FlipHistory returns the stored flip inputs computed in [from, to], oldest first.
+// FlipHistory lists the stored flip inputs computed in [from, to], oldest first, without their
+// data (~2 MB each).
 func (s *Store) FlipHistory(ctx context.Context, from, to int64) ([]FlipHistoryRow, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT computed_at, source, data FROM flip_history WHERE computed_at>=? AND computed_at<=? ORDER BY computed_at`, from, to)
+	rows, err := s.DB.QueryContext(ctx, `SELECT computed_at, source, COALESCE(version, '') FROM flip_history WHERE computed_at>=? AND computed_at<=? ORDER BY computed_at`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -828,12 +829,19 @@ func (s *Store) FlipHistory(ctx context.Context, from, to int64) ([]FlipHistoryR
 	var out []FlipHistoryRow
 	for rows.Next() {
 		var r FlipHistoryRow
-		if err := rows.Scan(&r.At, &r.Source, &r.Data); err != nil {
+		if err := rows.Scan(&r.At, &r.Source, &r.Version); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// FlipHistoryData returns the compressed flip inputs stored at the given time (opaque to the store).
+func (s *Store) FlipHistoryData(ctx context.Context, at int64) ([]byte, error) {
+	var b []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT data FROM flip_history WHERE computed_at=?`, at).Scan(&b)
+	return b, err
 }
 
 // PruneFlipHistory deletes stored flip inputs computed before the given time.

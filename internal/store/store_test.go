@@ -315,8 +315,12 @@ func TestReclassifyGearSales(t *testing.T) {
 func TestFlipHistory(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()
-	for _, r := range []FlipHistoryRow{{100, FlipHistoryLive, []byte("a")}, {200, FlipHistoryRebuilt, []byte("b")}, {300, FlipHistoryLive, []byte("c")}} {
-		if err := st.SaveFlipHistory(ctx, r.At, r.Source, "v", r.Data); err != nil {
+	for _, r := range []struct {
+		at     int64
+		source string
+		data   string
+	}{{100, FlipHistoryLive, "a"}, {200, FlipHistoryRebuilt, "b"}, {300, FlipHistoryLive, "c"}} {
+		if err := st.SaveFlipHistory(ctx, r.at, r.source, "v", []byte(r.data)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -325,8 +329,11 @@ func TestFlipHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := st.FlipHistory(ctx, 150, 300)
-	if err != nil || len(rows) != 2 || rows[0].At != 200 || string(rows[0].Data) != "b2" || rows[1].Source != FlipHistoryLive {
+	if err != nil || len(rows) != 2 || rows[0].At != 200 || rows[0].Source != FlipHistoryRebuilt || rows[1].Source != FlipHistoryLive {
 		t.Fatalf("%+v %v", rows, err)
+	}
+	if b, err := st.FlipHistoryData(ctx, 200); err != nil || string(b) != "b2" {
+		t.Fatalf("%q %v", b, err)
 	}
 	if n, err := st.PruneFlipHistory(ctx, 250); err != nil || n != 2 {
 		t.Fatalf("pruned %d (%v)", n, err)

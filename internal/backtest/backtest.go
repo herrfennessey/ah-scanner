@@ -22,7 +22,6 @@ import (
 
 	"github.com/herrfennessey/ah-scanner/internal/report"
 	"github.com/herrfennessey/ah-scanner/internal/store"
-	"github.com/herrfennessey/ah-scanner/internal/version"
 )
 
 // Options says when to plan and what the player looks like.
@@ -132,12 +131,18 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 	for _, r := range o.Styles {
 		bought[r] = &consumed{}
 	}
-	stored, err := inputsFor(ctx, st, o, times)
+	plans, err := inputsFor(ctx, st, o, times)
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range times {
-		in, err := report.DecodeInputs(stored[t])
+	for _, p := range plans {
+		t := p.at
+		// Loaded one planning time at a time: a run's inputs are hundreds of MB compressed.
+		z, err := st.FlipHistoryData(ctx, p.row)
+		if err != nil {
+			return nil, fmt.Errorf("inputs at %d: %w", t, err)
+		}
+		in, err := report.DecodeInputs(z)
 		if err != nil {
 			return nil, fmt.Errorf("inputs at %d: %w", t, err)
 		}
@@ -165,39 +170,74 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 	return out, nil
 }
 
-// inputsFor returns compressed flip inputs for every planning time: replayed from flip_history
-// where possible, rebuilt (in parallel on o.Read) and saved where not. Planning itself stays
-// sequential: each time depends on what was bought and held before it.
-func inputsFor(ctx context.Context, st *store.Store, o Options, times []int64) (map[int64][]byte, error) {
-	out := make(map[int64][]byte, len(times))
+// plan is one planning time and the flip_history row (its computed_at) holding its inputs.
+type plan struct{ at, row int64 }
+
+// inputsFor returns the inputs for every planning time: replayed where possible, rebuilt (in
+// parallel on o.Read) and saved where not. Planning itself stays sequential: each time depends on
+// what was bought and held before it.
+//
+// A live row is computed after a whole batch of feeds, so it can hold scans from after the
+// planning time t that picked it. The plan then moves to the newest scan the row holds (its
+// as-of time), so planning and scoring start where its inputs end; if that would reach the next
+// planning time, the row isn't used and t is rebuilt strictly as of t.
+func inputsFor(ctx context.Context, st *store.Store, o Options, times []int64) ([]plan, error) {
+	out := make([]plan, len(times))
 	if len(times) == 0 {
 		return out, nil
 	}
+	have := make([]bool, len(times))
 	var missing []int64
-	if o.Inputs == "rebuild" {
+	switch o.Inputs {
+	case "rebuild":
 		missing = times
-	} else {
+	case "", "stored":
 		rows, err := st.FlipHistory(ctx, times[0], times[len(times)-1]+liveMatch)
 		if err != nil {
 			return nil, err
 		}
+		scans, err := scanTimes(ctx, st.DB, times[0], times[len(times)-1]+liveMatch)
+		if err != nil {
+			return nil, err
+		}
+		asOf := func(at int64) int64 { // the newest scan fetched by at
+			i := sort.Search(len(scans), func(i int) bool { return scans[i] > at })
+			if i == 0 {
+				return 0
+			}
+			return scans[i-1]
+		}
 		j := 0
-		for _, t := range times {
+		for i, t := range times {
+			next := int64(math.MaxInt64)
+			if i+1 < len(times) {
+				next = times[i+1]
+			}
 			for j < len(rows) && rows[j].At < t {
 				j++
 			}
-			// The first row at or after t: a live one computed right after that scan, or the
-			// one a backtest rebuilt for exactly t.
 			for k := j; k < len(rows) && rows[k].At < t+liveMatch; k++ {
-				if r := rows[k]; (r.Source == store.FlipHistoryLive) || (r.Source == store.FlipHistoryRebuilt && r.At == t) {
-					out[t] = r.Data
+				r := rows[k]
+				if r.Version != report.InputsVersion {
+					continue // built by older input code
+				}
+				if r.Source == store.FlipHistoryRebuilt && r.At == t {
+					out[i], have[i] = plan{t, r.At}, true
 					break
 				}
+				if r.Source == store.FlipHistoryLive {
+					if a := asOf(r.At); a >= t && a < next {
+						out[i], have[i] = plan{a, r.At}, true
+					}
+					break // later rows only hold more scans
+				}
 			}
-			if out[t] == nil {
+			if !have[i] {
 				missing = append(missing, t)
 			}
 		}
+	default:
+		return nil, fmt.Errorf("inputs %q: want stored or rebuild", o.Inputs)
 	}
 	logf := o.Log
 	if logf == nil {
@@ -251,13 +291,23 @@ func inputsFor(ctx context.Context, st *store.Store, o Options, times []int64) (
 	}()
 	start := time.Now()
 	for done := 1; done <= len(missing); done++ {
-		r := <-results
+		var r result
+		select {
+		case r = <-results:
+		case <-ctx.Done():
+			// Workers that saw the cancellation may have exited without sending.
+			return nil, ctx.Err()
+		}
 		if r.err != nil {
 			return nil, fmt.Errorf("inputs at %d: %w", r.t, r.err)
 		}
-		out[r.t] = r.z
+		for i, t := range times {
+			if t == r.t {
+				out[i] = plan{t, t}
+			}
+		}
 		// Saved on the writer so the next backtest replays them.
-		if err := st.SaveFlipHistory(ctx, r.t, store.FlipHistoryRebuilt, version.String(), r.z); err != nil {
+		if err := st.SaveFlipHistory(ctx, r.t, store.FlipHistoryRebuilt, report.InputsVersion, r.z); err != nil {
 			return nil, err
 		}
 		if done%10 == 0 || done == len(missing) {
@@ -265,6 +315,24 @@ func inputsFor(ctx context.Context, st *store.Store, o Options, times []int64) (
 		}
 	}
 	return out, nil
+}
+
+// scanTimes lists the times scans were fetched in [from, to], oldest first.
+func scanTimes(ctx context.Context, db *sql.DB, from, to int64) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT fetched_at FROM snapshot WHERE fetched_at>=? AND fetched_at<=? ORDER BY fetched_at`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var t int64
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // consumedFor is how long a bought listing is assumed to stay in the recorded history: the
@@ -416,7 +484,9 @@ func planTimes(ctx context.Context, db *sql.DB, from, to, every int64) ([]int64,
 		if err := rows.Scan(&t); err != nil {
 			return nil, err
 		}
-		if t >= next {
+		// At least half the interval apart: two scans either side of a slot boundary would
+		// otherwise both plan, seconds apart.
+		if t >= next && (len(out) == 0 || t-out[len(out)-1] >= every/2) {
 			out = append(out, t)
 			next = (t/every + 1) * every
 		}

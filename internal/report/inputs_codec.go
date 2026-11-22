@@ -9,6 +9,11 @@ import (
 // Flip inputs are ~14 MB of JSON a scan; zstd brings them to ~2 MB and decodes in ~15 ms, which
 // makes keeping them for every scan (flip_history) affordable.
 
+// InputsVersion is stored with every flip_history row; the backtest replays only rows built
+// with the current one. Bump it whenever BuildFlipInputs computes anything differently, so
+// inputs stored by older code are rebuilt instead of replayed.
+const InputsVersion = "1"
+
 // EncodeAll and DecodeAll are safe for concurrent use.
 var (
 	zenc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))

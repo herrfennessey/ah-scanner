@@ -103,8 +103,9 @@ or `-queue 2` scales the check-in queue to test the rule. `-csv` lists every tra
 The inputs as they were then come from `flip_history`: the collector keeps each scan's flip
 inputs (compressed, `flip_history_days`), so a backtest replays exactly what the planner saw and
 mostly just plans and scores. Planning times with nothing stored are rebuilt from the auction
-history on every core and saved for next time. After changing how the inputs are built, run
-with `-inputs rebuild`.
+history on every core and saved for next time. Stored inputs carry a format version
+(`report.InputsVersion`, bumped whenever their computation changes) and other versions are
+rebuilt; `-inputs rebuild` rebuilds everything.
 
 To look at the UI without deploying, run it on a copy of the database: point a config's
 `data_dir` at the copy and run `ahc serve -rebuild`. `-rebuild` recomputes the flips from the
