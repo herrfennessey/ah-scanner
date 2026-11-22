@@ -147,3 +147,68 @@ func TestBoughtListingsAreNotBoughtAgain(t *testing.T) {
 		t.Fatal("after expiry")
 	}
 }
+
+func TestInputsReplayedFromHistoryAndRebuiltOnce(t *testing.T) {
+	st, t0 := scenario(t)
+	ctx := context.Background()
+	houses := []report.FlipHouse{{ID: 113, Faction: "horde", Cut: 0.05, Tracked: true}}
+	times := []int64{t0 + 3600, t0 + 7200}
+	// The collector's own inputs for the first scan, computed a minute after it.
+	live, err := report.EncodeInputs(&report.FlipInputs{ComputedAt: times[0] + 60, SpanDays: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveFlipHistory(ctx, times[0]+60, store.FlipHistoryLive, "test", live); err != nil {
+		t.Fatal(err)
+	}
+	o := Options{Houses: houses, DepositRate: 0.2}
+	got, err := inputsFor(ctx, st, o, times)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in, _ := report.DecodeInputs(got[times[0]]); in == nil || in.SpanDays != 42 {
+		t.Fatalf("first time should replay the live inputs: %+v", in)
+	}
+	if in, _ := report.DecodeInputs(got[times[1]]); in == nil || in.ComputedAt != times[1] {
+		t.Fatalf("second time should be rebuilt at that time: %+v", in)
+	}
+	// The rebuilt one was saved: a second pass finds both stored and rebuilds nothing.
+	var logged []string
+	o.Log = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	if _, err := inputsFor(ctx, st, o, times); err != nil {
+		t.Fatal(err)
+	}
+	if len(logged) != 1 || logged[0] != "inputs: 2 of 2 planning times stored, rebuilding 0" {
+		t.Fatalf("%q", logged)
+	}
+	// "rebuild" ignores what's stored.
+	o.Inputs = "rebuild"
+	if got, _ := inputsFor(ctx, st, o, times); got[times[0]] == nil {
+		t.Fatal("rebuild should rebuild")
+	} else if in, _ := report.DecodeInputs(got[times[0]]); in.SpanDays == 42 {
+		t.Fatal("rebuild replayed the live inputs")
+	}
+}
+
+func TestPlanTimesDontMoveWithTheStart(t *testing.T) {
+	st, t0 := scenario(t)
+	ctx := context.Background()
+	a, err := planTimes(ctx, st.DB, t0, t0+30*3600, 7200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Starting 40 minutes later must pick the same scans after that point.
+	b, err := planTimes(ctx, st.DB, t0+2400, t0+30*3600, 7200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := map[int64]bool{}
+	for _, x := range a {
+		set[x] = true
+	}
+	for _, x := range b[1:] {
+		if !set[x] {
+			t.Fatalf("plan time %d moved: %v vs %v", x, a, b)
+		}
+	}
+}

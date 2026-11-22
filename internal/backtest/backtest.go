@@ -22,6 +22,7 @@ import (
 
 	"github.com/herrfennessey/ah-scanner/internal/report"
 	"github.com/herrfennessey/ah-scanner/internal/store"
+	"github.com/herrfennessey/ah-scanner/internal/version"
 )
 
 // Options says when to plan and what the player looks like.
@@ -35,7 +36,23 @@ type Options struct {
 	Houses []report.FlipHouse
 	// QueueScale scales the check-in relist rule's queue (default 1): under 1 relists sooner.
 	QueueScale float64
+
+	// Inputs: "stored" (default) replays the flip inputs in flip_history (the collector's own
+	// after each scan, else ones a backtest rebuilt) and rebuilds only what's missing; "rebuild"
+	// rebuilds every planning time (after changing how inputs are built). Rebuilt inputs are saved.
+	Inputs string
+	// Read is a read-only store with several connections for rebuilding inputs in parallel
+	// (store.OpenReadOnly); nil rebuilds them one at a time on st.
+	Read *store.Store
+	// Workers is how many planning times to rebuild at once (default: Read's, or 1).
+	Workers int
+	// Log reports progress (nil: quiet).
+	Log func(format string, args ...any)
 }
+
+// liveMatch is how long after a planning time a live flip_history row may have been computed
+// and still stand for it (the collector refreshes within a minute or two of a publish).
+const liveMatch = 10 * 60
 
 // Trade is one flip the planner proposed and what came of it.
 type Trade struct {
@@ -115,8 +132,12 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 	for _, r := range o.Styles {
 		bought[r] = &consumed{}
 	}
+	stored, err := inputsFor(ctx, st, o, times)
+	if err != nil {
+		return nil, err
+	}
 	for _, t := range times {
-		in, err := report.BuildFlipInputsAt(ctx, st, o.Houses, o.DepositRate, time.Unix(t, 0))
+		in, err := report.DecodeInputs(stored[t])
 		if err != nil {
 			return nil, fmt.Errorf("inputs at %d: %w", t, err)
 		}
@@ -139,6 +160,108 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Trade, error) {
 				busy[key] = t + int64(tr.Hours*3600)
 				out = append(out, tr)
 			}
+		}
+	}
+	return out, nil
+}
+
+// inputsFor returns compressed flip inputs for every planning time: replayed from flip_history
+// where possible, rebuilt (in parallel on o.Read) and saved where not. Planning itself stays
+// sequential: each time depends on what was bought and held before it.
+func inputsFor(ctx context.Context, st *store.Store, o Options, times []int64) (map[int64][]byte, error) {
+	out := make(map[int64][]byte, len(times))
+	if len(times) == 0 {
+		return out, nil
+	}
+	var missing []int64
+	if o.Inputs == "rebuild" {
+		missing = times
+	} else {
+		rows, err := st.FlipHistory(ctx, times[0], times[len(times)-1]+liveMatch)
+		if err != nil {
+			return nil, err
+		}
+		j := 0
+		for _, t := range times {
+			for j < len(rows) && rows[j].At < t {
+				j++
+			}
+			// The first row at or after t: a live one computed right after that scan, or the
+			// one a backtest rebuilt for exactly t.
+			for k := j; k < len(rows) && rows[k].At < t+liveMatch; k++ {
+				if r := rows[k]; (r.Source == store.FlipHistoryLive) || (r.Source == store.FlipHistoryRebuilt && r.At == t) {
+					out[t] = r.Data
+					break
+				}
+			}
+			if out[t] == nil {
+				missing = append(missing, t)
+			}
+		}
+	}
+	logf := o.Log
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	logf("inputs: %d of %d planning times stored, rebuilding %d", len(times)-len(missing), len(times), len(missing))
+	if len(missing) == 0 {
+		return out, nil
+	}
+	read, workers := o.Read, o.Workers
+	if read == nil {
+		read, workers = st, 1
+	}
+	if workers <= 0 {
+		workers = 1
+	}
+	type result struct {
+		t   int64
+		z   []byte
+		err error
+	}
+	jobs := make(chan int64)
+	results := make(chan result)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for w := 0; w < workers; w++ {
+		go func() {
+			for t := range jobs {
+				in, err := report.BuildFlipInputsAt(ctx, read, o.Houses, o.DepositRate, time.Unix(t, 0))
+				var z []byte
+				if err == nil {
+					z, err = report.EncodeInputs(in)
+				}
+				select {
+				case results <- result{t, z, err}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, t := range missing {
+			select {
+			case jobs <- t:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	start := time.Now()
+	for done := 1; done <= len(missing); done++ {
+		r := <-results
+		if r.err != nil {
+			return nil, fmt.Errorf("inputs at %d: %w", r.t, r.err)
+		}
+		out[r.t] = r.z
+		// Saved on the writer so the next backtest replays them.
+		if err := st.SaveFlipHistory(ctx, r.t, store.FlipHistoryRebuilt, version.String(), r.z); err != nil {
+			return nil, err
+		}
+		if done%10 == 0 || done == len(missing) {
+			logf("inputs: rebuilt %d/%d (%s)", done, len(missing), time.Since(start).Round(time.Second))
 		}
 	}
 	return out, nil
@@ -284,14 +407,18 @@ func planTimes(ctx context.Context, db *sql.DB, from, to, every int64) ([]int64,
 		return nil, err
 	}
 	defer rows.Close()
+	// The first scan in each slot of a grid fixed to the epoch (not to when the backtest
+	// started), so every run picks the same scans and replays the inputs stored for them.
 	var out []int64
+	next := int64(0)
 	for rows.Next() {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
 			return nil, err
 		}
-		if len(out) == 0 || t-out[len(out)-1] >= every {
+		if t >= next {
 			out = append(out, t)
+			next = (t/every + 1) * every
 		}
 	}
 	return out, rows.Err()

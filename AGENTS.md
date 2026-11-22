@@ -35,7 +35,11 @@ after each scan), so planner and UI changes show up without a collector running.
 
 `ahc backtest` facts that bite:
 
-- It takes ~20 min for `-days 4` (it rebuilds `BuildFlipInputs` from SQLite at every past scan).
+- It replays each planning time's flip inputs from `flip_history` (the collector stores them after
+  every scan, `flip_history_days`), so a run is mostly `PlanFlips` and scoring. Times with nothing
+  stored are rebuilt with `BuildFlipInputsAt` in parallel (`-workers`, a read-only pool) and saved,
+  so only the first run on a fresh copy is slow. After changing how inputs are built (anything
+  `BuildFlipInputs` computes), pass `-inputs rebuild` or the old stored inputs are replayed.
 - `-days` counts back from *now*, not from the copy's newest scan, and only plans where every
   hold ends inside the data: on a copy a day old, `-days 4` scores about 2 days.
 - It writes to the database it runs on (`BackfillFront`, `ReclassifyGearSales`, a rollup). To
